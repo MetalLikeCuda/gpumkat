@@ -3,16 +3,18 @@
 #include "modules/pipeline_statistics/pipeline_statistics.h"
 #include "modules/plugin_manager/plugin_manager.h"
 #include "modules/update/update.h"
+#include "modules/visualization/visualization.h"
+#include <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
-#import <WebKit/WebKit.h>
 #include <dirent.h>
 #import <mach/mach_time.h>
 #include <pthread.h>
 #include <pwd.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 
-#define VERSION "v1.0"
+#define VERSION "v1.1"
 #define MAX_PATH_LEN 256
 
 // -------------------- Hot Reloading --------------------
@@ -170,124 +172,6 @@ id<MTLBuffer> create_buffer_with_error_checking(id<MTLDevice> device,
   return buffer;
 }
 
-// ----------------------------------------------------- Heatmap
-// -------------------------------------------------
-
-void generate_buffer_heatmap(id<MTLBuffer> buffer, const char *buffer_name,
-                             bool before_execution) {
-  if (!buffer || !buffer_name) {
-    NSLog(@"Error: Invalid buffer or buffer name");
-    return;
-  }
-
-  float *data = (float *)[buffer contents];
-  size_t buffer_length = buffer.length / sizeof(float);
-
-  if (!data || buffer_length == 0) {
-    NSLog(@"Error: Buffer data is null or empty");
-    return;
-  }
-
-  NSMutableString *htmlContent = [NSMutableString string];
-  [htmlContent appendString:@"<!DOCTYPE html>\n<html>\n<head>\n"];
-  [htmlContent appendString:@"<script "
-                            @"src=\"https://cdnjs.cloudflare.com/ajax/libs/"
-                            @"Chart.js/3.7.1/chart.min.js\"></script>\n"];
-  [htmlContent appendString:@"<style>body { font-family: Arial; max-width: "
-                            @"800px; margin: auto; }</style>\n"];
-  [htmlContent appendString:@"</head>\n<body>\n"];
-
-  // Create a unique filename based on buffer name and execution stage
-  char filename[256];
-  snprintf(filename, sizeof(filename), "%s_%s_heatmap.html", buffer_name,
-           before_execution ? "before" : "after");
-
-  // Prepare data for heatmap
-  NSMutableArray *dataArray = [NSMutableArray array];
-  for (size_t i = 0; i < buffer_length; i++) {
-    if (isnan(data[i]) || isinf(data[i])) {
-      NSLog(@"Warning: Buffer contains NaN or Inf at index %zu", i);
-      continue;
-    }
-    [dataArray addObject:@[ @(i), @(data[i]) ]]; // Storing index-value pairs
-  }
-
-  if ([dataArray count] == 0) {
-    NSLog(@"Error: No valid data to plot in heatmap");
-    return;
-  }
-
-  [htmlContent appendFormat:@"<h2>%s Buffer Heatmap (%s Execution)</h2>\n",
-                            buffer_name, before_execution ? "Before" : "After"];
-  [htmlContent appendString:@"<canvas id=\"heatmapChart\"></canvas>\n"];
-  [htmlContent appendString:@"<script>\n"];
-  [htmlContent
-      appendString:
-          @"var ctx = "
-          @"document.getElementById('heatmapChart').getContext('2d');\n"];
-  [htmlContent appendString:@"var chart = new Chart(ctx, {\n"];
-  [htmlContent appendString:@"    type: 'scatter',\n"];
-  [htmlContent appendString:@"    data: {\n"];
-  [htmlContent appendString:@"        datasets: [{\n"];
-  [htmlContent appendString:@"            label: 'Buffer Data',\n"];
-  [htmlContent
-      appendString:
-          @"            backgroundColor: 'rgba(75, 192, 192, 0.6)',\n"];
-  [htmlContent
-      appendString:@"            borderColor: 'rgba(75, 192, 192, 1)',\n"];
-  [htmlContent appendString:@"            pointRadius: 3,\n"];
-
-  // Convert data array to JSON safely
-  NSError *jsonError = nil;
-  NSData *jsonData = [NSJSONSerialization dataWithJSONObject:dataArray
-                                                     options:0
-                                                       error:&jsonError];
-
-  if (jsonError) {
-    NSLog(@"Error serializing JSON: %@", jsonError);
-    return;
-  }
-
-  NSString *jsonString = [[NSString alloc] initWithData:jsonData
-                                               encoding:NSUTF8StringEncoding];
-
-  [htmlContent appendFormat:@"            data: %@\n", jsonString];
-  [htmlContent appendString:@"        }]\n"];
-  [htmlContent appendString:@"    },\n"];
-  [htmlContent appendString:@"    options: {\n"];
-  [htmlContent appendString:@"        plugins: {\n"];
-  [htmlContent appendString:@"            title: { display: true, text: "
-                            @"'Buffer Data Heatmap' },\n"];
-  [htmlContent appendString:@"        },\n"];
-  [htmlContent appendString:@"        scales: {\n"];
-  [htmlContent
-      appendString:@"            x: { type: 'linear', position: 'bottom' },\n"];
-  [htmlContent appendString:@"            y: { type: 'linear' }\n"];
-  [htmlContent appendString:@"        }\n"];
-  [htmlContent appendString:@"    }\n"];
-  [htmlContent appendString:@"});\n"];
-  [htmlContent appendString:@"</script>\n"];
-  [htmlContent appendString:@"</body>\n</html>"];
-
-  // Write to file
-  NSString *documentsPath = [NSSearchPathForDirectoriesInDomains(
-      NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-  NSString *filePath =
-      [documentsPath stringByAppendingPathComponent:@(filename)];
-
-  NSError *error;
-  BOOL success = [htmlContent writeToFile:filePath
-                               atomically:YES
-                                 encoding:NSUTF8StringEncoding
-                                    error:&error];
-
-  if (!success) {
-    NSLog(@"Error writing heatmap file: %@", error);
-  } else {
-    NSLog(@"Heatmap saved: %@", filePath);
-  }
-}
-
 // --------------------------------------------------------------------------Main--------------------------------------------------------------------------
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
@@ -313,9 +197,9 @@ int main(int argc, const char *argv[]) {
     struct stat st = {0};
     if (stat(plugin_dir, &st) == -1) {
       // Create the .gpumkat directory first
-      char osxiec_dir[MAX_PATH_LEN];
-      snprintf(osxiec_dir, sizeof(osxiec_dir), "%s/.gpumkat", home_dir);
-      if (mkdir(osxiec_dir, 0755) == -1 && errno != EEXIST) {
+      char gpumkat_dir[MAX_PATH_LEN];
+      snprintf(gpumkat_dir, sizeof(gpumkat_dir), "%s/.gpumkat", home_dir);
+      if (mkdir(gpumkat_dir, 0755) == -1 && errno != EEXIST) {
         fprintf(stderr, "Error creating .gpumkat directory: %s\n",
                 strerror(errno));
         // Continue execution, as the program can still function without plugins
@@ -358,11 +242,12 @@ int main(int argc, const char *argv[]) {
                  VERSION);
 
           char update_command[256];
-          sprintf(update_command,
-                  "curl -L -o gpumkat.tar.gz "
-                  "https://github.com/Okerew/gpumkat/releases/download/%s/"
-                  "gpumkat.tar.gz",
-                  latest_version);
+          sprintf(
+              update_command,
+              "curl -L -o gpumkat.tar.gz "
+              "https://github.com/MetalLikeCuda/gpumkat/releases/download/%s/"
+              "gpumkat.tar.gz",
+              latest_version);
 
           if (system(update_command) == 0 &&
               system("tar -xvzf gpumkat.tar.gz") == 0) {
@@ -425,6 +310,8 @@ int main(int argc, const char *argv[]) {
       return 0;
     } else if (strcmp(argv[1], "-help") == 0) {
       printf("Usage: gpumkat <path_to_config_file>\n");
+      printf("Core image shader profiling session: gpumkat "
+             "<path_to_config_file> -ci <shader_name>\n");
       printf("Commands:\n");
       printf("-update: Check for and download the latest version\n");
       printf("-remove_plugin <plugin_name>: Remove a plugin\n");
@@ -443,18 +330,27 @@ int main(int argc, const char *argv[]) {
     Timer setupTimer = {get_time(), 0};
 
     ProfilerConfig *config = load_config(argv[1]);
+    init_log_file(config);
     if (!config) {
       NSLog(@"Failed to load configuration");
+      log_message(config, 0, "Config", "Failed to load configuration");
       return -1;
     }
 
     // Print debug configuration if enabled
     if (config->debug.enabled) {
       NSLog(@"\n=== Debug Mode Enabled ===");
+      log_message(config, 2, "Debug", "\n=== Debug Mode Enabled ===");
       NSLog(@"Verbosity Level: %d", config->debug.verbosity_level);
+      log_message(config, 2, "Debug", "Verbosity Level: %d",
+                  config->debug.verbosity_level);
       NSLog(@"Step-by-step: %@", config->debug.step_by_step ? @"Yes" : @"No");
+      log_message(config, 2, "Debug", "Step-by-step: %@",
+                  config->debug.step_by_step ? @"Yes" : @"No");
       NSLog(@"Variable tracking: %@",
             config->debug.print_variables ? @"Yes" : @"No");
+      log_message(config, 2, "Debug", "Variable tracking: %@",
+                  config->debug.print_variables ? @"Yes" : @"No");
     }
 
     AsyncCommandDebugExtension async_debug_ext = {0};
@@ -473,6 +369,7 @@ int main(int argc, const char *argv[]) {
       low_end_gpu_sim.memory = config->debug.low_end_gpu.memory;
       low_end_gpu_sim.thermal = config->debug.low_end_gpu.thermal;
       low_end_gpu_sim.logging = config->debug.low_end_gpu.logging;
+      low_end_gpu_sim.rendering = config->debug.low_end_gpu.rendering;
     }
 
     init_timeline(&config->debug);
@@ -491,6 +388,8 @@ int main(int argc, const char *argv[]) {
     if (![[NSFileManager defaultManager]
             fileExistsAtPath:metallibFilePathString]) {
       NSLog(@"Metal library file does not exist: %@", metallibFilePathString);
+      log_message(config, 0, "Error", "Metal library file does not exist: %@",
+                  metallibFilePathString);
       return -1;
     }
 
@@ -525,13 +424,37 @@ int main(int argc, const char *argv[]) {
     }
     capture_shader_state(&config->debug, function);
 
-    id<MTLComputePipelineState> pipelineState =
-        [device newComputePipelineStateWithFunction:function error:&error];
-    if (!pipelineState) {
-      record_error(&config->debug, ERROR_SEVERITY_FATAL,
-                   ERROR_CATEGORY_PIPELINE,
-                   [[error localizedDescription] UTF8String], "PipelineSetup");
-      return -1;
+    id pipelineState = nil;
+
+    if (config->pipeline_type == PIPELINE_TYPE_COMPUTE) {
+      pipelineState = [device newComputePipelineStateWithFunction:function
+                                                            error:&error];
+
+      if (!pipelineState) {
+        record_error(
+            &config->debug, ERROR_SEVERITY_FATAL, ERROR_CATEGORY_PIPELINE,
+            [[error localizedDescription] UTF8String], "PipelineSetup");
+        return -1;
+      }
+    } else {
+      MTLRenderPipelineDescriptor *renderPipelineDescriptor =
+          [[MTLRenderPipelineDescriptor alloc] init];
+      renderPipelineDescriptor.vertexFunction =
+          [library newFunctionWithName:@"vertexShader"];
+      renderPipelineDescriptor.fragmentFunction = function;
+      renderPipelineDescriptor.colorAttachments[0].pixelFormat =
+          MTLPixelFormatBGRA8Unorm;
+
+      pipelineState =
+          [device newRenderPipelineStateWithDescriptor:renderPipelineDescriptor
+                                                 error:&error];
+
+      if (!pipelineState) {
+        record_error(
+            &config->debug, ERROR_SEVERITY_FATAL, ERROR_CATEGORY_PIPELINE,
+            [[error localizedDescription] UTF8String], "RenderPipelineSetup");
+        return -1;
+      }
     }
 
     pthread_t hot_reload_thread =
@@ -547,6 +470,18 @@ int main(int argc, const char *argv[]) {
     add_event_marker("BufferSetup", "Creating and preparing buffers");
 
     NSMutableDictionary *metalBuffers = [NSMutableDictionary dictionary];
+
+    if (config->image_buffers > 0) {
+      initialize_image_buffers(device, config);
+    }
+
+    id<MTLCommandQueue> commandQueue = [device newCommandQueue];
+    if (!commandQueue) {
+      record_error(&config->debug, ERROR_SEVERITY_FATAL,
+                   ERROR_CATEGORY_COMMAND_QUEUE,
+                   "Failed to create command queue", "CommandQueueSetup");
+      return -1;
+    }
 
     for (NSValue *value in config->buffers) {
       BufferConfig *bufferConfig = value.pointerValue;
@@ -584,6 +519,84 @@ int main(int argc, const char *argv[]) {
         print_buffer_state(buffer, bufferConfig->name,
                            bufferConfig->size * sizeof(float));
       }
+
+      // Find matching ImageBufferConfig for this buffer (if any)
+      ImageBufferConfig *imageConfig = nil;
+      for (NSValue *imgValue in config->image_buffers) {
+        ImageBufferConfig *tempImageConfig = [imgValue pointerValue];
+
+        if (strcmp(bufferConfig->name, tempImageConfig->name) == 0) {
+          imageConfig = tempImageConfig;
+          break; // Found matching image buffer, no need to continue
+        }
+      }
+
+      // Skip if no matching ImageBufferConfig was found
+      if (!imageConfig) {
+        continue;
+      }
+
+      if (strcmp(argv[2], "-ci") == 0) {
+        const char *filterName =
+            argv[3]; // Get the filter name from command line
+        size_t width = imageConfig->width;
+        size_t height = imageConfig->height;
+
+        // Create a Core Image context for Metal
+        CIContext *ciContext = [CIContext contextWithMTLDevice:device];
+
+        // Convert the Metal buffer to a Metal texture
+        MTLTextureDescriptor *textureDescriptor =
+            [[MTLTextureDescriptor alloc] init];
+        textureDescriptor.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        textureDescriptor.width = width;
+        textureDescriptor.height = height;
+        textureDescriptor.usage =
+            MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+
+        id<MTLTexture> inputTexture =
+            [device newTextureWithDescriptor:textureDescriptor];
+        id<MTLTexture> outputTexture =
+            [device newTextureWithDescriptor:textureDescriptor];
+
+        // Convert Metal texture to CIImage
+        CIImage *ciImage = [CIImage imageWithMTLTexture:inputTexture
+                                                options:nil];
+
+        // Apply Core Image filter
+        CIFilter *ciFilter = [CIFilter
+            filterWithName:[NSString stringWithUTF8String:filterName]];
+        if (!ciFilter) {
+          fprintf(stderr, "Error: Invalid Core Image filter name: %s\n",
+                  filterName);
+          return EXIT_FAILURE;
+        }
+        [ciFilter setValue:ciImage forKey:kCIInputImageKey];
+
+        CIImage *outputImage = [ciFilter outputImage];
+        if (!outputImage) {
+          fprintf(stderr, "Error: Failed to process image with filter %s\n",
+                  filterName);
+          return EXIT_FAILURE;
+        }
+
+        id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
+
+        // Render the filtered CIImage back to a Metal texture
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+        [ciContext render:outputImage
+             toMTLTexture:outputTexture
+            commandBuffer:commandBuffer
+                   bounds:outputImage.extent
+               colorSpace:colorSpace];
+        CGColorSpaceRelease(colorSpace);
+
+        printf("Applied filter %s to buffer %s\n", filterName,
+               bufferConfig->name);
+
+        // Store the filtered output texture in Metal buffer storage
+        metalBuffers[@(bufferConfig->name)] = outputTexture;
+      }
     }
 
     bufferTimer.end_time = get_time();
@@ -607,13 +620,6 @@ int main(int argc, const char *argv[]) {
       check_breakpoints(&config->debug, "BeforeCommandBufferCreation");
     }
 
-    id<MTLCommandQueue> commandQueue = [device newCommandQueue];
-    if (!commandQueue) {
-      record_error(&config->debug, ERROR_SEVERITY_FATAL,
-                   ERROR_CATEGORY_COMMAND_QUEUE,
-                   "Failed to create command queue", "CommandQueueSetup");
-      return -1;
-    }
     id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
     if (!commandBuffer) {
       record_error(&config->debug, ERROR_SEVERITY_FATAL,
@@ -635,81 +641,177 @@ int main(int argc, const char *argv[]) {
     }
 
     __block PipelineStats stats = {0};
+    __block RenderPipelineStats render_stats = {0};
 
     // Set up performance monitoring
-    stats = collect_pipeline_statistics(commandBuffer, pipelineState);
-
-    id<MTLComputeCommandEncoder> encoder =
-        [commandBuffer computeCommandEncoder];
-    if (!encoder) {
-      record_error(
-          &config->debug, ERROR_SEVERITY_FATAL, ERROR_CATEGORY_COMMAND_ENCODER,
-          "Failed to create compute command encoder", "EncoderCreation");
-      return -1;
+    if (config->pipeline_type == PIPELINE_TYPE_COMPUTE) {
+      stats = collect_pipeline_statistics(commandBuffer, pipelineState);
     }
 
-    // Dispatch kernel
-    if (config->debug.enabled) {
-      check_breakpoints(&config->debug, "BeforeDispatch");
-    }
-    [encoder setComputePipelineState:pipelineState];
-
-    // Set buffers with debug info
-    int bufferIndex = 0;
-    for (NSValue *value in config->buffers) {
-      BufferConfig *bufferConfig = value.pointerValue;
-      [encoder setBuffer:metalBuffers[@(bufferConfig->name)]
-                  offset:0
-                 atIndex:bufferIndex];
-      if ([value pointerValue] != (void *)[value pointerValue]) {
-        record_error(&config->debug, ERROR_SEVERITY_ERROR,
-                     ERROR_CATEGORY_BUFFER, "Buffer not found for index",
-                     bufferConfig->name);
-        continue;
+    if (config->pipeline_type == PIPELINE_TYPE_COMPUTE) {
+      id<MTLComputeCommandEncoder> encoder =
+          [commandBuffer computeCommandEncoder];
+      if (!encoder) {
+        record_error(&config->debug, ERROR_SEVERITY_FATAL,
+                     ERROR_CATEGORY_COMMAND_ENCODER,
+                     "Failed to create compute command encoder",
+                     "EncoderCreation");
+        return -1;
       }
 
-      if (config->debug.enabled && config->debug.verbosity_level >= 2) {
-        NSLog(@"Set buffer '%s' at index %d", bufferConfig->name, bufferIndex);
+      // Dispatch kernel
+      if (config->debug.enabled) {
+        check_breakpoints(&config->debug, "BeforeDispatch");
       }
-      capture_command_buffer_state(&config->debug, commandBuffer,
-                                   bufferConfig->name);
-      bufferIndex++;
-    }
+      [encoder setComputePipelineState:pipelineState];
 
-    // Configure and dispatch threads with debug info
-    MTLSize gridSize = MTLSizeMake(1024, 1, 1);
-    MTLSize threadGroupSize = MTLSizeMake(32, 1, 1);
+      // Set buffers with debug info
+      int bufferIndex = 0;
+      for (NSValue *value in config->buffers) {
+        BufferConfig *bufferConfig = value.pointerValue;
+        [encoder setBuffer:metalBuffers[@(bufferConfig->name)]
+                    offset:0
+                   atIndex:bufferIndex];
+        if ([value pointerValue] != (void *)[value pointerValue]) {
+          record_error(&config->debug, ERROR_SEVERITY_ERROR,
+                       ERROR_CATEGORY_BUFFER, "Buffer not found for index",
+                       bufferConfig->name);
+          continue;
+        }
 
-    if (config->debug.enabled && config->debug.verbosity_level >= 1) {
-      NSLog(@"\n=== Thread Configuration ===");
-      NSLog(@"Grid Size: %lux%lux%lu", gridSize.width, gridSize.height,
-            gridSize.depth);
-      NSLog(@"Thread Group Size: %lux%lux%lu", threadGroupSize.width,
-            threadGroupSize.height, threadGroupSize.depth);
-    }
+        if (config->debug.enabled && config->debug.verbosity_level >= 2) {
+          NSLog(@"Set buffer '%s' at index %d", bufferConfig->name,
+                bufferIndex);
+          log_message(config, 2, "Debug", "Set buffer '%s' at index %d",
+                      bufferConfig->name, bufferIndex);
+        }
+        capture_command_buffer_state(&config->debug, commandBuffer,
+                                     bufferConfig->name);
+        bufferIndex++;
+      }
 
-    [metalBuffers enumerateKeysAndObjectsUsingBlock:^(
-                      NSString *key, id<MTLBuffer> buffer, BOOL *stop) {
-      generate_buffer_heatmap(buffer, [key UTF8String], true);
-    }];
-
-    if (config->debug.enabled && config->debug.break_before_dispatch) {
-      debug_pause("About to dispatch compute kernel");
-    }
-
-    if (low_end_gpu_sim.enabled) {
-      NSLog(@"\n=== Low-End GPU Simulation Enabled ===");
+      // Configure and dispatch threads with debug info
       MTLSize gridSize = MTLSizeMake(1024, 1, 1);
       MTLSize threadGroupSize = MTLSizeMake(32, 1, 1);
 
-      simulate_advanced_low_end_gpu(&low_end_gpu_sim, encoder, &gridSize,
-                                    &threadGroupSize);
-    } else {
-      configure_thread_execution(encoder, &config->debug, &gridSize, &threadGroupSize);
-    }
+      if (config->debug.enabled && config->debug.verbosity_level >= 1) {
+        NSLog(@"\n=== Thread Configuration ===");
+        log_message(config, 2, "Debug", "\n=== Thread Configuration ===");
+        NSLog(@"Grid Size: %lux%lux%lu", gridSize.width, gridSize.height,
+              gridSize.depth);
+        log_message(config, 2, "Debug", "Grid Size: %lux%lux%lu",
+                    gridSize.width, gridSize.height, gridSize.depth);
+        NSLog(@"Thread Group Size: %lux%lux%lu", threadGroupSize.width,
+              threadGroupSize.height, threadGroupSize.depth);
+        log_message(config, 2, "Debug", "Thread Group Size: %lux%lux%lu",
+                    threadGroupSize.width, threadGroupSize.height,
+                    threadGroupSize.depth);
+      }
 
-    configure_thread_execution(encoder, &config->debug, &gridSize, &threadGroupSize);
-    [encoder endEncoding];
+      [metalBuffers enumerateKeysAndObjectsUsingBlock:^(
+                        NSString *key, id<MTLBuffer> buffer, BOOL *stop) {
+        generate_all_buffer_visualizations(buffer, [key UTF8String], true);
+      }];
+
+      if (config->debug.enabled && config->debug.break_before_dispatch) {
+        debug_pause("About to dispatch compute kernel");
+      }
+
+      if (low_end_gpu_sim.enabled) {
+        NSLog(@"\n=== Low-End GPU Simulation Enabled ===");
+        log_message(config, 2, "Debug",
+                    "\n=== Low-End GPU Simulation Enabled ===");
+        MTLSize gridSize = MTLSizeMake(1024, 1, 1);
+        MTLSize threadGroupSize = MTLSizeMake(32, 1, 1);
+
+        simulate_low_end_gpu(&low_end_gpu_sim, encoder, &gridSize,
+                             &threadGroupSize);
+      } else {
+        configure_thread_execution(encoder, &config->debug, &gridSize,
+                                   &threadGroupSize);
+      }
+
+      configure_thread_execution(encoder, &config->debug, &gridSize,
+                                 &threadGroupSize);
+      [encoder endEncoding];
+    } else {
+      MTLTextureDescriptor *textureDescriptor = [MTLTextureDescriptor
+          texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                       width:1024
+                                      height:1024
+                                   mipmapped:NO];
+      textureDescriptor.usage =
+          MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+      id<MTLTexture> renderTarget =
+          [device newTextureWithDescriptor:textureDescriptor];
+
+      // Create render pass descriptor
+      MTLRenderPassDescriptor *renderPassDescriptor =
+          [MTLRenderPassDescriptor renderPassDescriptor];
+      renderPassDescriptor.colorAttachments[0].texture = renderTarget;
+      renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
+      renderPassDescriptor.colorAttachments[0].storeAction =
+          MTLStoreActionStore;
+      renderPassDescriptor.colorAttachments[0].clearColor =
+          MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+
+      // Create render command encoder
+      id<MTLRenderCommandEncoder> renderEncoder = [commandBuffer
+          renderCommandEncoderWithDescriptor:renderPassDescriptor];
+      if (!renderEncoder) {
+        record_error(&config->debug, ERROR_SEVERITY_FATAL,
+                     ERROR_CATEGORY_COMMAND_ENCODER,
+                     "Failed to create render command encoder",
+                     "RenderEncoderCreation");
+        return -1;
+      }
+
+      if (config->debug.enabled) {
+        check_breakpoints(&config->debug, "BeforeRenderDispatch");
+      }
+
+      [renderEncoder setRenderPipelineState:pipelineState];
+
+      int bufferIndex = 0;
+      for (NSValue *value in config->buffers) {
+        BufferConfig *bufferConfig = value.pointerValue;
+        [renderEncoder setVertexBuffer:metalBuffers[@(bufferConfig->name)]
+                                offset:0
+                               atIndex:bufferIndex];
+        [renderEncoder setFragmentBuffer:metalBuffers[@(bufferConfig->name)]
+                                  offset:0
+                                 atIndex:bufferIndex];
+
+        if ([value pointerValue] != (void *)[value pointerValue]) {
+          record_error(&config->debug, ERROR_SEVERITY_ERROR,
+                       ERROR_CATEGORY_BUFFER, "Buffer not found for index",
+                       bufferConfig->name);
+          continue;
+        }
+
+        if (config->debug.enabled && config->debug.verbosity_level >= 2) {
+          NSLog(@"Set buffer '%s' at index %d for both vertex and fragment "
+                @"stages",
+                bufferConfig->name, bufferIndex);
+          log_message(
+              config, 2, "Debug",
+              "Set buffer '%s' at index %d for both vertex and fragment stages",
+              bufferConfig->name, bufferIndex);
+        }
+        bufferIndex++;
+      }
+
+      render_stats = collect_render_pipeline_statistics(commandBuffer, pipelineState, renderPassDescriptor, bufferIndex + 1, 1, 1);
+
+      [renderEncoder drawPrimitives:MTLPrimitiveTypeTriangle
+                        vertexStart:0
+                        vertexCount:bufferIndex];
+
+      simulate_low_end_gpu_rendering(&low_end_gpu_sim, renderEncoder,
+                                     bufferIndex + 1, 1);
+
+      [renderEncoder endEncoding];
+    }
 
     if (config->debug.async_debug.config.enable_async_tracking) {
       [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
@@ -723,6 +825,8 @@ int main(int argc, const char *argv[]) {
     if (config->debug.enabled) {
       [commandBuffer addScheduledHandler:^(id<MTLCommandBuffer> buffer) {
         NSLog(@"[DEBUG] Kernel scheduled at: %f", CACurrentMediaTime());
+        log_message(config, 2, "Debug", "[DEBUG] Kernel scheduled at: %f",
+                    CACurrentMediaTime());
       }];
 
       [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
@@ -734,15 +838,34 @@ int main(int argc, const char *argv[]) {
 
         if (config->debug.enabled) {
           NSLog(@"[DEBUG] Kernel completed at: %f", CACurrentMediaTime());
+          log_message(config, 2, "Debug", "[DEBUG] Kernel completed at: %f",
+                      CACurrentMediaTime());
         }
 
-        // Update final statistics
-        stats.gpuTime = buffer.GPUEndTime - buffer.GPUStartTime;
+        if (config->pipeline_type == PIPELINE_TYPE_COMPUTE) {
+          // Update final statistics
+          stats.gpuTime = buffer.GPUEndTime - buffer.GPUStartTime;
 
-        NSLog(@"\n=== Performance Summary ===");
+          NSLog(@"\n=== Performance Summary ===");
+          log_message(config, 2, "Debug", "\n=== Performance Summary ===");
 
-        NSLog(@"GPU Time: %.3f ms", stats.gpuTime * 1000.0);
-        NSLog(@"CPU Usage: %.2f%%", stats.cpuUsage);
+          NSLog(@"GPU Time: %.3f ms", stats.gpuTime * 1000.0);
+          log_message(config, 2, "Debug", "GPU Time: %.3f ms",
+                      stats.gpuTime * 1000.0);
+          NSLog(@"CPU Usage: %.2f%%", stats.cpuUsage);
+          log_message(config, 2, "Debug", "CPU Usage: %.2f%%", stats.cpuUsage);
+        } else{
+          render_stats.gpuTime = buffer.GPUEndTime - buffer.GPUStartTime;
+          
+          NSLog(@"\n=== Performance Summary ===");
+          log_message(config, 2, "Debug", "\n=== Performance Summary ===");
+
+          NSLog(@"GPU Time: %.3f ms", render_stats.gpuTime * 1000.0);
+          log_message(config, 2, "Debug", "GPU Time: %.3f ms", render_stats.gpuTime * 1000.0);
+          render_stats.cpuUsage = stats.cpuUsage;
+          NSLog (@"CPU Usage: %.2f%%", render_stats.cpuUsage * 100.0);
+          log_message(config, 2, "Debug", "CPU Usage: %.2f%%", render_stats.cpuUsage * 100.0);
+        }
       }];
     }
 
@@ -764,27 +887,39 @@ int main(int argc, const char *argv[]) {
                       NSString *key, id<MTLBuffer> buffer, BOOL *stop) {
       float *data = (float *)[buffer contents];
       NSLog(@"\nBuffer %@ sample (first 10 elements):", key);
+      log_message(config, 2, "Debug",
+                  "\nBuffer %@ sample (first 10 elements):", key);
       for (int i = 0; i < MIN(10, buffer.length / sizeof(float)); i++) {
         NSLog(@"%@[%d] = %.2f", key, i, data[i]);
+        log_message(config, 2, "Debug", "%@[%d] = %.2f", key, i, data[i]);
       }
     }];
 
     NSLog(@"\n=== Performance Summary ===");
+    log_message(config, 2, "Debug", "\n=== Performance Summary ===");
 
     print_error_summary(&config->debug);
 
     NSLog(@"\n=== Memory Leak Check ===");
+    log_message(config, 2, "Debug", "\n=== Memory Leak Check ===");
     for (int i = 0; i < allocationCount; i++) {
       NSLog(@"Potential leak: %zu bytes at %p (allocated at: %s)",
             allocations[i].size, allocations[i].address,
             allocations[i].allocation_site);
+      log_message(config, 1, "Debug",
+                  "Potential leak: %zu bytes at %p (allocated at: %s)",
+                  allocations[i].size, allocations[i].address,
+                  allocations[i].allocation_site);
     }
 
     NSLog(@"\n=== Event Timeline ===");
+    log_message(config, 2, "Debug", "\n=== Event Timeline ===");
     for (int i = 0; i < markerCount; i++) {
       double timestamp = convert_time_to_seconds(eventMarkers[i].timestamp);
       NSLog(@"[%.6f] %s: %s", timestamp, eventMarkers[i].name,
             eventMarkers[i].metadata);
+      log_message(config, 2, "Debug", "[%.6f] %s: %s", timestamp,
+                  eventMarkers[i].name, eventMarkers[i].metadata);
     }
 
     validationTimer.end_time = get_time();
@@ -797,7 +932,7 @@ int main(int argc, const char *argv[]) {
 
     [metalBuffers enumerateKeysAndObjectsUsingBlock:^(
                       NSString *key, id<MTLBuffer> buffer, BOOL *stop) {
-      generate_buffer_heatmap(buffer, [key UTF8String], false);
+      generate_all_buffer_visualizations(buffer, [key UTF8String], false);
     }];
 
     add_event_marker("Cleanup", "Beginning resource cleanup");
@@ -848,7 +983,10 @@ int main(int argc, const char *argv[]) {
     double totalTime = convert_time_to_seconds(validationTimer.end_time -
                                                setupTimer.start_time);
     NSLog(@"\n=== Final Timing Summary ===");
+    log_message(config, 2, "Debug", "\n=== Final Timing Summary ===");
     NSLog(@"Total execution time: %.6f seconds", totalTime);
+    log_message(config, 2, "Debug", "Total execution time: %.6f seconds",
+                totalTime);
 
     return 0;
   }
