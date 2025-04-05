@@ -17,6 +17,7 @@ set(SOURCES
     modules/update/update.m
     modules/memory_tracker/memory_tracker.m
     modules/pipeline_statistics/pipeline_statistics.m
+    modules/visualization/visualization.m
 )
 
 # Create the executable target
@@ -30,6 +31,7 @@ target_link_libraries(gpumkat
     -framework Metal
     -framework MetalPerformanceShaders
     -framework QuartzCore
+    -framework AppKit
 )
 
 find_package(CURL REQUIRED)

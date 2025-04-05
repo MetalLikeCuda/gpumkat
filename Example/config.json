@@ -1,6 +1,13 @@
 {
   "metallib_path": "default.metallib",
   "function_name": "compute_shader",
+  "pipeline_type": "compute",
+  "logging": {
+    "enabled": true,
+    "log_file_path": "gpumkat_profiler.log",
+    "log_level": 3,
+    "log_timestamps": true
+  },
   "debug": {
     "enabled": true,
     "print_variables": true,
@@ -40,7 +47,7 @@
       "memory": {
         "bandwidth_reduction": 0.6,
         "latency_multiplier": 3.0,
-        "available_memory": 536870912, 
+        "available_memory": 536870912,
         "memory_error_rate": 0.02
       },
       "thermal": {
@@ -51,6 +58,12 @@
       "logging": {
         "detailed_logging": true,
         "log_file_path": "/tmp/low_end_gpu_simulation.log"
+      },
+      "rendering": {
+        "fillrate_reduction": 0.2,
+        "texture_quality_reduction": 0.3,
+        "reduce_draw_distance": true,
+        "draw_distance_factor": 0.5
       }
     },
     "async_debug": {
@@ -84,6 +97,15 @@
       "size": 1024,
       "type": "float",
       "contents": []
+    }
+  ],
+  "image_buffers": [
+    {
+      "name": "inputImage",
+      "image_path": "/path/to/image.png",
+      "width": 0,
+      "height": 0,
+      "type": "float"
     }
   ]
 }

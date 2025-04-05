@@ -2,6 +2,7 @@
 #import <Metal/Metal.h>
 #import <execinfo.h>
 #include <stdint.h>
+#import <MetalKit/MetalKit.h>
 
 typedef struct {
   double cpuUsage;
@@ -22,6 +23,41 @@ typedef struct {
   double gpuToCpuTransferTime;
   uint64_t gpuToCpuBandwidth;
 } PipelineStats;
+
+typedef struct {
+    double cpuUsage;
+    uint64_t usedMemory;
+    uint64_t virtualMemory;
+    uint64_t totalMemory;
+    
+    // Render-specific metrics
+    double gpuTime;
+    double vertexProcessingTime;
+    double fragmentProcessingTime;
+    double rasterizationTime;
+    double currentFPS;
+    double actualFPS;
+    
+    // Memory metrics
+    uint64_t vertexMemoryUsage;
+    uint64_t textureMemoryUsage;
+    uint64_t bufferMemoryUsage;
+    
+    // Pipeline state
+    NSUInteger vertexShaderInvocations;
+    NSUInteger fragmentShaderInvocations;
+    NSUInteger primitivesProcessed;
+    NSUInteger primitivesDrawn;
+    
+    // Bandwidth and transfer
+    double gpuToCpuTransferTime;
+    uint64_t gpuToCpuBandwidth;
+    
+    // Additional render-specific metrics
+    double drawCallTime;
+    NSUInteger drawCallCount;
+    double commandBufferExecutionTime;
+} RenderPipelineStats;
 
 typedef struct {
   uint64_t cacheHits;
@@ -577,4 +613,191 @@ collect_pipeline_statistics(id<MTLCommandBuffer> commandBuffer,
   }];
 
   return stats;
+}
+
+RenderPipelineStats collect_render_pipeline_statistics(id<MTLCommandBuffer> commandBuffer,
+                                                     id<MTLRenderPipelineState> pipelineState,
+                                                     MTLRenderPassDescriptor *renderPassDescriptor,
+                                                     NSUInteger vertexCount,
+                                                     NSUInteger instanceCount,
+                                                     NSUInteger drawCallCount)  {
+    __block RenderPipelineStats stats = {0};
+    
+    // Get memory usage
+    mach_port_t host_port = mach_host_self();
+    vm_size_t page_size;
+    vm_statistics64_data_t vm_stats;
+    mach_msg_type_number_t count = sizeof(vm_stats) / sizeof(natural_t);
+    host_page_size(host_port, &page_size);
+    host_statistics64(host_port, HOST_VM_INFO64, (host_info64_t)&vm_stats, &count);
+    
+    stats.cpuUsage = getProgramCPUUsage();
+    uint64_t residentMemory, virtualMemory;
+    getProgramMemoryUsage(&residentMemory, &virtualMemory);
+    stats.usedMemory = residentMemory;
+    stats.virtualMemory = virtualMemory;
+    stats.totalMemory = [NSProcessInfo processInfo].physicalMemory;
+    
+    for (NSUInteger i = 0; i < 8; i++) {
+        MTLRenderPassColorAttachmentDescriptor *colorAttachment = renderPassDescriptor.colorAttachments[i];
+        if (colorAttachment && colorAttachment.texture) {
+            NSUInteger bytesPerPixel = 4; // Default to RGBA8
+            switch (colorAttachment.texture.pixelFormat) {
+                case MTLPixelFormatRGBA16Float: bytesPerPixel = 8; break;
+                case MTLPixelFormatRGBA32Float: bytesPerPixel = 16; break;
+                case MTLPixelFormatRGB10A2Unorm: bytesPerPixel = 4; break;
+                case MTLPixelFormatBGRA8Unorm: bytesPerPixel = 4; break;
+                // Add more pixel formats as needed
+                default: bytesPerPixel = 4; break;
+            }
+            stats.textureMemoryUsage += colorAttachment.texture.width * colorAttachment.texture.height * bytesPerPixel;
+        }
+    }
+     
+    // Handle depth attachment
+    if (renderPassDescriptor.depthAttachment.texture) {
+        NSUInteger bytesPerPixel = 4; // Default to depth32Float or depth24Stencil8
+        switch (renderPassDescriptor.depthAttachment.texture.pixelFormat) {
+            case MTLPixelFormatDepth32Float: bytesPerPixel = 4; break;
+            case MTLPixelFormatDepth32Float_Stencil8: bytesPerPixel = 8; break;
+            case MTLPixelFormatDepth16Unorm: bytesPerPixel = 2; break;
+            case MTLPixelFormatX32_Stencil8: bytesPerPixel = 4; break;
+            case MTLPixelFormatX24_Stencil8: bytesPerPixel = 4; break;
+            default: bytesPerPixel = 4; break;
+        }
+        stats.textureMemoryUsage += renderPassDescriptor.depthAttachment.texture.width * 
+                                  renderPassDescriptor.depthAttachment.texture.height * bytesPerPixel;
+    }
+    
+    // Handle stencil attachment (if separate from depth)
+    if (renderPassDescriptor.stencilAttachment.texture && 
+        renderPassDescriptor.stencilAttachment.texture != renderPassDescriptor.depthAttachment.texture) {
+        // Stencil is typically 8 bits per pixel
+        stats.textureMemoryUsage += renderPassDescriptor.stencilAttachment.texture.width * 
+                                  renderPassDescriptor.stencilAttachment.texture.height;
+    }
+    
+    // Record GPU start time for transfer measurement
+    CFAbsoluteTime startTime = CFAbsoluteTimeGetCurrent();
+    
+    [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
+        // Calculate GPU execution time
+        stats.gpuTime = buffer.GPUEndTime - buffer.GPUStartTime;
+        
+        // Simulate pipeline stage timings
+        stats.vertexProcessingTime = stats.gpuTime * 0.3;
+        stats.fragmentProcessingTime = stats.gpuTime * 0.5;
+        stats.rasterizationTime = stats.gpuTime * 0.2;
+        
+        // Calculate FPS
+        double gpuBasedFPS = (stats.gpuTime > 0) ? 1.0 / stats.gpuTime : 0.0;
+        const double systemMaxFPS = 60.0;
+        stats.currentFPS = fmin(gpuBasedFPS, systemMaxFPS);
+        stats.actualFPS = gpuBasedFPS;
+        
+        // Calculate transfer time
+        CFAbsoluteTime endTime = CFAbsoluteTimeGetCurrent();
+        stats.gpuToCpuTransferTime = endTime - startTime;
+        
+        // Calculate bandwidth
+        if (stats.gpuToCpuTransferTime > 0) {
+            stats.gpuToCpuBandwidth = (uint64_t)(stats.textureMemoryUsage / stats.gpuToCpuTransferTime);
+        }
+        
+        // Estimate shader invocations (these would normally come from your rendering logic)
+        stats.vertexShaderInvocations = vertexCount * instanceCount;
+        stats.fragmentShaderInvocations = stats.vertexShaderInvocations * 2; // Approximate
+        
+        // Estimate primitive counts
+        stats.primitivesProcessed = stats.vertexShaderInvocations / 3;
+        stats.primitivesDrawn = stats.primitivesProcessed * 0.9;
+        
+        // Estimate draw call metrics
+        stats.drawCallCount = drawCallCount;
+        stats.drawCallTime = stats.gpuTime * 0.1;
+        stats.commandBufferExecutionTime = stats.gpuTime * 0.9;
+        
+        // Estimate primitive counts
+        stats.primitivesProcessed = stats.vertexShaderInvocations / 3; // Assuming triangles
+        stats.primitivesDrawn = stats.primitivesProcessed * 0.9; // Assuming 10% culled
+        
+        // Estimate draw call metrics
+        stats.drawCallCount = 100; // Example value
+        stats.drawCallTime = stats.gpuTime * 0.1; // 10% of time in draw calls
+        stats.commandBufferExecutionTime = stats.gpuTime * 0.9; // 90% of time in actual execution
+        
+        // Print comprehensive statistics
+        NSLog(@"=== Render Pipeline Statistics ===");
+        NSLog(@"Performance Metrics:");
+        NSLog(@"Frames Per Second: %.2f (capped at %.2f)", stats.actualFPS, stats.currentFPS);
+        NSLog(@"GPU Frame Time: %.3f ms", stats.gpuTime * 1000.0);
+        
+        NSLog(@"==Pipeline Stage Timings:==");
+        NSLog(@"Vertex Processing: %.3f ms (%.1f%%)", stats.vertexProcessingTime * 1000.0, 
+              (stats.vertexProcessingTime / stats.gpuTime) * 100.0);
+        NSLog(@"Rasterization: %.3f ms (%.1f%%)", stats.rasterizationTime * 1000.0, 
+              (stats.rasterizationTime / stats.gpuTime) * 100.0);
+        NSLog(@"Fragment Processing: %.3f ms (%.1f%%)", stats.fragmentProcessingTime * 1000.0, 
+              (stats.fragmentProcessingTime / stats.gpuTime) * 100.0);
+        
+        NSLog(@"==Shader Metrics:==");
+        NSLog(@"Vertex Shader Invocations: %lu", (unsigned long)stats.vertexShaderInvocations);
+        NSLog(@"Fragment Shader Invocations: %lu", (unsigned long)stats.fragmentShaderInvocations);
+        NSLog(@"Primitives Processed: %lu", (unsigned long)stats.primitivesProcessed);
+        NSLog(@"Primitives Drawn: %lu (%.1f%% culled)", (unsigned long)stats.primitivesDrawn, 
+              ((double)(stats.primitivesProcessed - stats.primitivesDrawn) / stats.primitivesProcessed) * 100.0);
+        
+        NSLog(@"==Memory Metrics:==");
+        NSLog(@"Texture Memory Usage: %.2f MB", (double)stats.textureMemoryUsage / (1024.0 * 1024.0));
+        NSLog(@"Buffer Memory Usage: %.2f MB", (double)stats.bufferMemoryUsage / (1024.0 * 1024.0));
+        NSLog(@"Total Estimated VRAM Usage: %.2f MB", 
+              (double)(stats.textureMemoryUsage + stats.bufferMemoryUsage) / (1024.0 * 1024.0));
+        
+        NSLog(@"==Command Metrics:==");
+        NSLog(@"Draw Calls: %lu", (unsigned long)stats.drawCallCount);
+        NSLog(@"Draw Call Overhead: %.3f ms (%.1f%%)", stats.drawCallTime * 1000.0, 
+              (stats.drawCallTime / stats.gpuTime) * 100.0);
+        NSLog(@"Command Buffer Execution: %.3f ms", stats.commandBufferExecutionTime * 1000.0);
+        
+        NSLog(@"==Transfer Metrics:==");
+        NSLog(@"GPU-CPU Transfer Time: %.3f ms", stats.gpuToCpuTransferTime * 1000.0);
+        NSLog(@"Approximate Bandwidth: %.2f GB/s", (double)stats.gpuToCpuBandwidth / (1024.0 * 1024.0 * 1024.0));
+        
+        // Generate optimization recommendations
+        NSLog(@"==Optimization Recommendations:==");
+        if (stats.vertexProcessingTime > stats.fragmentProcessingTime) {
+            NSLog(@"- Vertex-bound pipeline detected. Consider:");
+            NSLog(@"  * Simplifying vertex shaders");
+            NSLog(@"  * Using vertex culling techniques");
+            NSLog(@"  * Implementing level-of-detail (LOD) systems");
+        } else {
+            NSLog(@"- Fragment-bound pipeline detected. Consider:");
+            NSLog(@"  * Reducing overdraw with early-z or depth prepass");
+            NSLog(@"  * Simplifying fragment shaders");
+            NSLog(@"  * Using texture atlases to reduce sampling");
+        }
+        
+        if (stats.drawCallTime > stats.gpuTime * 0.2) {
+            NSLog(@"- High draw call overhead detected (%.1f%%). Consider:", 
+                  (stats.drawCallTime / stats.gpuTime) * 100.0);
+            NSLog(@"  * Using instanced rendering");
+            NSLog(@"  * Merging draw calls where possible");
+            NSLog(@"  * Using indirect drawing");
+        }
+        
+        if (stats.textureMemoryUsage > 100 * 1024 * 1024) { // >100MB
+            NSLog(@"- High texture memory usage detected (%.2f MB). Consider:",
+                  (double)stats.textureMemoryUsage / (1024.0 * 1024.0));
+            NSLog(@"  * Using texture compression");
+            NSLog(@"  * Implementing texture streaming");
+            NSLog(@"  * Reducing texture resolutions where possible");
+        }
+        
+        // Print CPU metrics
+        NSLog(@"==CPU Metrics:==");
+        NSLog(@"CPU Usage: %.2f%%", stats.cpuUsage);
+        NSLog(@"Program Memory Usage: %.2f MB", (double)stats.usedMemory / (1024.0 * 1024.0));
+    }];
+    
+    return stats;
 }

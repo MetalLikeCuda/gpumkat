@@ -1,6 +1,7 @@
 #ifndef EXPOSE_FROM_DEBUG_H
 #define EXPOSE_FROM_DEBUG_H
 #include <Metal/Metal.h>
+
 void profile_command_buffer(id<MTLCommandBuffer> commandBuffer,
                             const char *name);
 
@@ -84,6 +85,13 @@ typedef struct {
 } TimelineConfig;
 
 typedef struct {
+  float fillrate_reduction;        // 0.0-1.0 (percentage of reduction)
+  float texture_quality_reduction; // 0.0-1.0 (percentage of reduction)
+  bool reduce_draw_distance;       // Whether to simulate reduced draw distance
+  float draw_distance_factor; // 0.0-1.0 (percentage of normal draw distance)
+} RenderingSimulation;
+
+typedef struct {
   bool enabled;
 
   // Compute Simulation
@@ -116,6 +124,8 @@ typedef struct {
     bool detailed_logging;
     char *log_file_path;
   } logging;
+
+  RenderingSimulation rendering;
 } LowEndGpuSimulation;
 
 // Advanced Memory Transfer Simulation
@@ -208,12 +218,34 @@ void cleanup_error_collector(ErrorCollector *collector);
 void print_error_summary(DebugConfig *debug);
 
 void debug_pause(const char *message);
+
+typedef enum {
+  PIPELINE_TYPE_COMPUTE, // Default
+  PIPELINE_TYPE_RENDERER // Graphics pipeline
+} PipelineType;
+
 typedef struct {
   const char *metallib_path;
   const char *function_name;
   NSMutableArray *buffers;
+  NSMutableArray *image_buffers; // New field for image buffers
   DebugConfig debug;
+  struct {
+    bool enabled;
+    const char *log_file_path;
+    int log_level; // 0=errors only, 1=warnings, 2=info, 3=debug
+    bool log_timestamps;
+  } logging;
+  PipelineType pipeline_type;
 } ProfilerConfig;
+
+typedef struct {
+  const char *name;
+  const char *image_path;
+  size_t width;     // Can be 0 for auto-detection
+  size_t height;    // Can be 0 for auto-detection
+  const char *type; // Type of buffer (e.g., "float")
+} ImageBufferConfig;
 
 ProfilerConfig *load_config(const char *config_path);
 void cleanup_error_collector(ErrorCollector *collector);
@@ -229,11 +261,21 @@ void save_timeline(DebugConfig *debug);
 void cleanup_timeline(DebugConfig *debug);
 void track_async_command(AsyncCommandDebugExtension *ext,
                          id<MTLCommandBuffer> commandBuffer, const char *name);
-void simulate_advanced_low_end_gpu(LowEndGpuSimulation *sim,
-                                   id<MTLComputeCommandEncoder> encoder,
-                                   MTLSize *gridSize, MTLSize *threadGroupSize);
+void simulate_low_end_gpu(LowEndGpuSimulation *sim,
+                          id<MTLComputeCommandEncoder> encoder,
+                          MTLSize *gridSize, MTLSize *threadGroupSize);
 void generate_async_command_timeline(AsyncCommandDebugExtension *ext);
 void configure_thread_execution(id<MTLComputeCommandEncoder> encoder,
                                 DebugConfig *debug, MTLSize *originalGridSize,
                                 MTLSize *originalThreadGroupSize);
+void init_log_file(ProfilerConfig *config);
+void log_message(ProfilerConfig *config, int level, const char *category,
+                 const char *format, ...);
+void initialize_image_buffers(id<MTLDevice> device, ProfilerConfig *config);
+void image_to_buffer(NSString *imagePath, id<MTLBuffer> buffer, size_t width,
+                     size_t height);
+void simulate_low_end_gpu_rendering(LowEndGpuSimulation *sim,
+                                    id<MTLRenderCommandEncoder> encoder,
+                                    NSUInteger vertexCount,
+                                    NSUInteger instanceCount);
 #endif

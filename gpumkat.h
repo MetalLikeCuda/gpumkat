@@ -1,23 +1,20 @@
 #ifndef GPUmkat_h
 #define GPUmkat_h
 
-#include "/opt/homebrew/Cellar/json-c/0.17/include/json-c/json.h"
+#include "modules/debug/expose_from_debug.h"
+#include "modules/memory_tracker/memory_tracker.h"
+#include "modules/pipeline_statistics/pipeline_statistics.h"
 #include "modules/plugin_manager/plugin_manager.h"
-#import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
-#import <MetalPerformanceShaders/MetalPerformanceShaders.h>
+#include "modules/update/update.h"
+#include "modules/visualization/visualization.h"
 #import <QuartzCore/QuartzCore.h>
-#include <curl/curl.h>
 #include <dirent.h>
-#import <execinfo.h>
-#import <mach/mach.h>
 #import <mach/mach_time.h>
+#include <pthread.h>
 #include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
-#import <sys/sysctl.h>
-#include <sys/types.h>
 
 #define VERSION "v1.0"
 #define ARCH "arm64"
@@ -311,11 +308,24 @@ typedef struct {
   ThreadControlConfig thread_control;
 } DebugConfig;
 
+typedef enum {
+  PIPELINE_TYPE_COMPUTE, // Default
+  PIPELINE_TYPE_RENDERER // Graphics pipeline
+} PipelineType;
+
 typedef struct {
   const char *metallib_path;
   const char *function_name;
   NSMutableArray *buffers;
+  NSMutableArray *image_buffers; // New field for image buffers
   DebugConfig debug;
+  struct {
+    bool enabled;
+    const char *log_file_path;
+    int log_level; // 0=errors only, 1=warnings, 2=info, 3=debug
+    bool log_timestamps;
+  } logging;
+  PipelineType pipeline_type;
 } ProfilerConfig;
 
 void print_error_summary(DebugConfig *debug);
@@ -364,4 +374,32 @@ void getKernelStats(id<MTLComputePipelineState> pipelineState,
                     uint64_t *activeWarps, uint64_t *threadBlockSize);
 int remove_plugin(const char *plugin_name);
 int add_plugin(const char *plugin_source);
+void init_log_file(ProfilerConfig *config);
+void log_message(ProfilerConfig *config, int level, const char *category,
+                 const char *format, ...);
+void initialize_image_buffers(id<MTLDevice> device, ProfilerConfig *config);
+void image_to_buffer(NSString *imagePath, id<MTLBuffer> buffer, size_t width,
+                     size_t height);
+void simulate_low_end_gpu_rendering(LowEndGpuSimulation *sim,
+                                    id<MTLRenderCommandEncoder> encoder,
+                                    NSUInteger vertexCount,
+                                    NSUInteger instanceCount);
+void generate_buffer_heatmap(id<MTLBuffer> buffer, const char *buffer_name,
+                             bool before_execution);
+bool can_visualize_as_image(id<MTLBuffer> buffer, size_t width, size_t height);
+void generate_buffer_image(id<MTLBuffer> buffer, const char *buffer_name,
+                           bool before_execution, size_t width, size_t height);
+void generate_buffer_surface_plot(id<MTLBuffer> buffer, const char *buffer_name,
+                                  bool before_execution, size_t width,
+                                  size_t height);
+void generate_buffer_histogram(id<MTLBuffer> buffer, const char *buffer_name,
+                               bool before_execution);
+void generate_all_buffer_visualizations(id<MTLBuffer> buffer,
+                                        const char *buffer_name,
+                                        bool before_execution);
+RenderPipelineStats collect_render_pipeline_statistics(
+    id<MTLCommandBuffer> commandBuffer,
+    id<MTLRenderPipelineState> pipelineState,
+    MTLRenderPassDescriptor *renderPassDescriptor, NSUInteger vertexCount,
+    NSUInteger instanceCount, NSUInteger drawCallCount);
 #endif /* gpumkat.h */
