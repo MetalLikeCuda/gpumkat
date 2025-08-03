@@ -1,7 +1,9 @@
 #include "modules/debug/expose_from_debug.h"
+#include "modules/lsp_server//lsp_integration.h"
 #include "modules/memory_tracker/memory_tracker.h"
 #include "modules/pipeline_statistics/pipeline_statistics.h"
 #include "modules/plugin_manager/plugin_manager.h"
+#include "modules/testing/testing.h"
 #include "modules/update/update.h"
 #include "modules/visualization/visualization.h"
 #include <Foundation/Foundation.h>
@@ -14,7 +16,7 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 
-#define VERSION "v1.1"
+#define VERSION "v1.2"
 #define MAX_PATH_LEN 256
 
 // -------------------- Hot Reloading --------------------
@@ -172,6 +174,11 @@ id<MTLBuffer> create_buffer_with_error_checking(id<MTLDevice> device,
   return buffer;
 }
 
+// Metal lsp server support
+void handle_sigint(int sig) {
+  printf("\nReceived interrupt signal, stopping LSP server...\n");
+  stop_metal_lsp_server();
+}
 // --------------------------------------------------------------------------Main--------------------------------------------------------------------------
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
@@ -229,6 +236,7 @@ int main(int argc, const char *argv[]) {
       }
       closedir(dir);
     }
+
     if (argc < 2) {
       NSLog(@"Usage: gpumkat <path_to_config_file> or -help to see other "
             @"commands");
@@ -308,6 +316,93 @@ int main(int argc, const char *argv[]) {
     } else if (strcmp(argv[1], "--version") == 0) {
       printf("Version: %s\n", VERSION);
       return 0;
+    } else if (strcmp(argv[1], "-test") == 0) {
+      if (argc < 3) {
+        fprintf(stderr, "Usage: %s -test <test_config.json>\n", argv[0]);
+        printf("Test Mode Usage:\n");
+        printf("  -test <test_config.json>              : Run tests using "
+               "metallib path from config\n");
+        printf("\nTest Configuration Format:\n");
+        printf("  The test config should be a JSON file containing test cases, "
+               "assertions,\n");
+        printf("  and expected results. See documentation for full format "
+               "specification.\n");
+        printf("\nExample:\n");
+        printf("  %s -test my_tests.json shaders.metallib\n", argv[0]);
+        return EXIT_FAILURE;
+      }
+
+      printf("\n" COLOR_CYAN
+             "=== GPU Metal Kernel Testing Framework ===" COLOR_RESET "\n");
+      printf("gpumkat version %s - Test Mode\n", VERSION);
+      printf("Loading test configuration: %s\n", argv[2]);
+
+      // Load test configuration
+      TestSuite *test_suite = load_test_config(argv[2]);
+      if (!test_suite) {
+        fprintf(stderr, "Error: Failed to load test configuration from %s\n",
+                argv[2]);
+        return EXIT_FAILURE;
+      }
+
+      // Determine metallib path
+      const char *metallib_path = NULL;
+      if (strlen(test_suite->metallib_path) > 0) {
+        // Use metallib path from config
+        metallib_path = test_suite->metallib_path;
+        printf("Using metallib file from config: %s\n", metallib_path);
+      } else {
+        fprintf(stderr, "Error: No metallib file specified. Provide "
+                        "metallib_path in test configuration :\n");
+        free_test_suite(test_suite);
+        return EXIT_FAILURE;
+      }
+
+      // Verify metallib file exists
+      if (![[NSFileManager defaultManager]
+              fileExistsAtPath:[NSString stringWithUTF8String:metallib_path]]) {
+        fprintf(stderr, "Error: Metallib file does not exist: %s\n",
+                metallib_path);
+        free_test_suite(test_suite);
+        return EXIT_FAILURE;
+      }
+
+      // Run the test suite
+      printf("Starting test execution...\n");
+      int test_result = run_test_suite(test_suite, metallib_path);
+
+      // Cleanup
+      free_test_suite(test_suite);
+
+      if (test_result == 0) {
+        printf("\n" COLOR_GREEN "All tests completed successfully!" COLOR_RESET
+               "\n");
+        return EXIT_SUCCESS;
+      } else {
+        printf(
+            "\n" COLOR_RED
+            "Some tests failed. Check the output above for details." COLOR_RESET
+            "\n");
+        return EXIT_FAILURE;
+      }
+    } else if (strcmp(argv[1], "-lsp") == 0) {
+      printf("Starting Metal Language Server...\n");
+      printf("Use Ctrl+C to stop the server.\n");
+
+      if (start_metal_lsp_server() != 0) {
+        fprintf(stderr, "Failed to start Metal LSP server\n");
+        return EXIT_FAILURE;
+      }
+
+      // Set up signal handler for graceful shutdown
+      signal(SIGINT, handle_sigint);
+
+      // Keep the server running
+      while (is_lsp_server_running()) {
+        sleep(1);
+      }
+
+      return 0;
     } else if (strcmp(argv[1], "-help") == 0) {
       printf("Usage: gpumkat <path_to_config_file>\n");
       printf("Core image shader profiling session: gpumkat "
@@ -318,6 +413,32 @@ int main(int argc, const char *argv[]) {
       printf("-add_plugin <plugin_source_file>: Add a plugin\n");
       printf("--version: Display version information\n");
       printf("-help: Display this help message\n");
+      printf("\nTesting Framework:\n");
+      printf("The testing framework allows you to create comprehensive test "
+             "suites\n");
+      printf("for your GPU compute kernels with the following features:\n");
+      printf("  • Automated test execution and result validation\n");
+      printf("  • Performance benchmarking and regression testing\n");
+      printf("  • Memory usage monitoring\n");
+      printf(
+          "  • Multiple assertion types (equals, near, buffer comparisons)\n");
+      printf("  • HTML test reports generation\n");
+      printf("  • Test filtering and selective execution\n");
+      printf("  • Detailed error reporting and debugging information\n");
+      printf("\nExample test workflow:\n");
+      printf("  1. Edit test_config.json to define your test cases\n");
+      printf("  2. gpumkat -test my_tests.json shaders.metallib\n");
+      printf("  3. Review generated HTML report for detailed results\n");
+      printf("LSP Server Commands:\n");
+      printf("  -lsp                          : Start Metal LSP server (stdio "
+             "mode)\n");
+      printf("\nLSP Integration:\n");
+      printf("  The Metal LSP server provides language support for Metal "
+             "shading language\n");
+      printf("  including syntax highlighting, completions, diagnostics, and "
+             "more.\n");
+      printf("\nEditor Integration:\n");
+      printf("  • Neovim: Add to your LSP config\n");
       return 0;
     }
 
@@ -801,7 +922,9 @@ int main(int argc, const char *argv[]) {
         bufferIndex++;
       }
 
-      render_stats = collect_render_pipeline_statistics(commandBuffer, pipelineState, renderPassDescriptor, bufferIndex + 1, 1, 1);
+      render_stats = collect_render_pipeline_statistics(
+          commandBuffer, pipelineState, renderPassDescriptor, bufferIndex + 1,
+          1, 1);
 
       [renderEncoder drawPrimitives:MTLPrimitiveTypeTriangle
                         vertexStart:0
@@ -854,17 +977,19 @@ int main(int argc, const char *argv[]) {
                       stats.gpuTime * 1000.0);
           NSLog(@"CPU Usage: %.2f%%", stats.cpuUsage);
           log_message(config, 2, "Debug", "CPU Usage: %.2f%%", stats.cpuUsage);
-        } else{
+        } else {
           render_stats.gpuTime = buffer.GPUEndTime - buffer.GPUStartTime;
-          
+
           NSLog(@"\n=== Performance Summary ===");
           log_message(config, 2, "Debug", "\n=== Performance Summary ===");
 
           NSLog(@"GPU Time: %.3f ms", render_stats.gpuTime * 1000.0);
-          log_message(config, 2, "Debug", "GPU Time: %.3f ms", render_stats.gpuTime * 1000.0);
+          log_message(config, 2, "Debug", "GPU Time: %.3f ms",
+                      render_stats.gpuTime * 1000.0);
           render_stats.cpuUsage = stats.cpuUsage;
-          NSLog (@"CPU Usage: %.2f%%", render_stats.cpuUsage * 100.0);
-          log_message(config, 2, "Debug", "CPU Usage: %.2f%%", render_stats.cpuUsage * 100.0);
+          NSLog(@"CPU Usage: %.2f%%", render_stats.cpuUsage * 100.0);
+          log_message(config, 2, "Debug", "CPU Usage: %.2f%%",
+                      render_stats.cpuUsage * 100.0);
         }
       }];
     }
@@ -987,6 +1112,10 @@ int main(int argc, const char *argv[]) {
     NSLog(@"Total execution time: %.6f seconds", totalTime);
     log_message(config, 2, "Debug", "Total execution time: %.6f seconds",
                 totalTime);
+
+    if (is_lsp_server_running()) {
+      stop_metal_lsp_server();
+    }
 
     return 0;
   }
