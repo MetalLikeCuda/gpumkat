@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html><head><title>Test Report: GPU Kernel Test Suite</title>
+<style>
+body { font-family: Arial, sans-serif; margin: 20px; }
+.pass { color: green; }
+.fail { color: red; }
+.skip { color: orange; }
+.error { color: red; font-weight: bold; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+th { background-color: #f2f2f2; }
+</style></head><body>
+<h1>Test Report: GPU Kernel Test Suite</h1>
+<p>Comprehensive test suite for GPU compute kernels</p>
+<h2>Summary</h2>
+<table>
+<tr><th>Metric</th><th>Value</th></tr>
+<tr><td>Total Tests</td><td>6</td></tr>
+<tr><td class='pass'>Passed</td><td>2</td></tr>
+<tr><td class='fail'>Failed</td><td>3</td></tr>
+<tr><td class='skip'>Skipped</td><td>1</td></tr>
+<tr><td class='error'>Errors</td><td>0</td></tr>
+<tr><td>Total Time</td><td>3.87 ms</td></tr>
+</table>
+<h2>Test Results</h2>
+<table>
+<tr><th>Test Name</th><th>Status</th><th>Time (ms)</th><th>Memory (MB)</th><th>Assertions</th><th>Message</th></tr>
+<tr>
+<td>vector_addition_basic</td>
+<td class='pass'>PASS</td>
+<td>0.37</td>
+<td>2.00</td>
+<td>4/4</td>
+<td></td>
+</tr>
+<tr>
+<td>matrix_multiply_performance</td>
+<td class='fail'>FAIL</td>
+<td>0.16</td>
+<td>0.00</td>
+<td>1/2</td>
+<td>One or more assertions failed</td>
+</tr>
+<tr>
+<td>edge_case_zero_division</td>
+<td class='fail'>FAIL</td>
+<td>0.14</td>
+<td>0.00</td>
+<td>1/3</td>
+<td>One or more assertions failed</td>
+</tr>
+<tr>
+<td>memory_intensive_test</td>
+<td class='pass'>PASS</td>
+<td>0.36</td>
+<td>0.00</td>
+<td>1/1</td>
+<td></td>
+</tr>
+<tr>
+<td>skipped_test_example</td>
+<td class='skip'>SKIP</td>
+<td>0.00</td>
+<td>0.00</td>
+<td>0/0</td>
+<td></td>
+</tr>
+<tr>
+<td>floating_point_precision</td>
+<td class='fail'>FAIL</td>
+<td>0.16</td>
+<td>0.00</td>
+<td>1/2</td>
+<td>One or more assertions failed</td>
+</tr>
+</table>
+</body></html>
