@@ -9,8 +9,9 @@ a GPU kernel analysis tool for macOS Metal with many features ranging from analy
 - any platform that supports metal
 - metal api
 - xcode
-- json-c 0.17
-- curl
+- homebrew 
+- json-c 0.17 (installed with homebrew)
+- curl 
 
 ## Installation
 
@@ -67,7 +68,22 @@ gpumkat -help
 gpumkat --version
 ```
 
-## Example config:
+**To run tests**
+```sh
+gpumkat -test <path_to_test_config_file>
+```
+
+**To run lsp server**
+
+```sh
+gpumkat -lsp
+```
+
+## Examples
+
+More examples can be seen in the examples folder
+
+### Example config:
 
 ```json
 {
@@ -183,7 +199,7 @@ gpumkat --version
 }
 ```
 
-## Example kernel:
+### Example kernel:
 
 ```c
 #include <metal_stdlib>
@@ -196,63 +212,14 @@ kernel void compute_shader(const device float *input [[buffer(0)]],
 }
 ```
 
-## Example Logs:
+### Example Logs:
 <img src="gpumkat_logs.png">
 
 ## Building
 
-You can build gpumkat using clang with the following command:
-
+You can build gpumkat using cmake with the following command:
 ```sh
- clang -I/opt/homebrew/Cellar/json-c/0.17/include \
-      -L/opt/homebrew/Cellar/json-c/0.17/lib \
-      -framework Foundation \
-      -framework Metal \
-      -framework MetalPerformanceShaders \
-      -framework QuartzCore \
-      -framework AppKit \
-      -lcurl \
-      -ljson-c \
-      main.m modules/plugin_manager/plugin_manager.m modules/debug/debug.m modules/debug/timeline_debug.m modules/update/update.m modules/memory_tracker/memory_tracker.m modules/pipeline_statistics/pipeline_statistics.m modules/visualization/visualization.m -o gpumkat
-```
-
-Or with cmake:
-
-```sh
-mkdir build
-cd build
-cmake ..
-make
-```
-
-### Building the library
-
-You can build gpumkat library by firstly doing this:
-
-```sh
-clang -I/opt/homebrew/Cellar/json-c/0.17/include \
-      -L/opt/homebrew/Cellar/json-c/0.17/lib \
-      -framework Foundation \
-      -framework Metal \
-      -framework MetalPerformanceShaders \
-      -framework QuartzCore \
-      -framework AppKit \
-      -lcurl \
-      -ljson-c \
-      -c main.m modules/plugin_manager/plugin_manager.m modules/debug/debug.m modules/debug/timeline_debug.m modules/update/update.m modules/memory_tracker/memory_tracker.m modules/pipeline_statistics/pipeline_statistics.m modules/visualization/visualization.m
-```
-
-Then do this 
-
-
-```sh
-clang -dynamiclib -o libgpumkat.dylib main.o plugin_manager.o debug.o timeline_debug.o update.o memory_tracker.o pipeline_statistics.o visualization.o \
-      -L/opt/homebrew/Cellar/json-c/0.17/lib -lcurl -ljson-c \
-      -framework Foundation \
-      -framework Metal \
-      -framework MetalPerformanceShaders \
-      -framework QuartzCore \
-      -framework AppKit
+mkdir build && cd build && cmake -S .. -B . -G "Ninja" && ninja
 ```
 
 ### Notes:
