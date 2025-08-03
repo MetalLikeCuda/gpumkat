@@ -83,6 +83,9 @@ gpumkat -lsp
 
 More examples can be seen in the examples folder
 
+### How lsp looks
+<img src="https://github.com/MetalLikeCuda/gpumkat/blob/main/lsp_image.png?raw=true">
+
 ### Example config:
 
 ```json
@@ -198,7 +201,87 @@ More examples can be seen in the examples folder
   ]
 }
 ```
-
+### Example test config
+```json
+{
+	"name": "GPU Kernel Test Suite",
+	"description": "Comprehensive test suite for GPU compute kernels",
+	"metallib_path": "test.metallib",
+	"stop_on_failure": false,
+	"verbose_output": true,
+	"generate_report": true,
+	"report_path": "gpu_test_report.html",
+	"test_cases": [
+		{
+			"name": "vector_addition_basic",
+			"description": "Test basic vector addition with simple inputs",
+			"pipeline_type": "compute",
+			"shader_function": "vector_add",
+			"skip": false,
+			"timeout_ms": 5000,
+			"max_execution_time_ms": 100,
+			"max_memory_usage_mb": 50,
+			"input_buffers": [
+				{
+					"name": "input_a",
+					"size": 1024,
+					"data": [
+						1.0,
+						2.0,
+						3.0,
+						4.0,
+						5.0
+					]
+				},
+				{
+					"name": "input_b",
+					"size": 1024,
+					"data": [
+						2.0,
+						3.0,
+						4.0,
+						5.0,
+						6.0
+					]
+				},
+				{
+					"name": "output",
+					"size": 1024,
+					"data": []
+				}
+			],
+			"assertions": [
+				{
+					"type": "buffer_equals",
+					"description": "First element should be 3.0",
+					"buffer_name": "output",
+					"index": 0,
+					"expected": 3.0
+				},
+				{
+					"type": "buffer_equals",
+					"description": "Second element should be 5.0",
+					"buffer_name": "output",
+					"index": 1,
+					"expected": 5.0
+				},
+				{
+					"type": "buffer_near",
+					"description": "Third element should be approximately 7.0",
+					"buffer_name": "output",
+					"index": 2,
+					"expected": 7.0,
+					"tolerance": 0.001
+				},
+				{
+					"type": "performance_lt",
+					"description": "Execution should complete within 50ms",
+					"threshold_ms": 50.0
+				}
+			]
+		}
+]
+```
 ### Example kernel:
 
 ```c
