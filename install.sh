@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Define the version of the installation
-GPUMKAT_VERSION="1.1"
+GPUMKAT_VERSION="1.2"
 
 # Check if the script is run as root
 if [ "$EUID" -ne 0 ]
