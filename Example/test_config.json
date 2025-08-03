@@ -1,0 +1,278 @@
+{
+	"name": "GPU Kernel Test Suite",
+	"description": "Comprehensive test suite for GPU compute kernels",
+	"metallib_path": "test.metallib",
+	"stop_on_failure": false,
+	"verbose_output": true,
+	"generate_report": true,
+	"report_path": "gpu_test_report.html",
+	"test_cases": [
+		{
+			"name": "vector_addition_basic",
+			"description": "Test basic vector addition with simple inputs",
+			"pipeline_type": "compute",
+			"shader_function": "vector_add",
+			"skip": false,
+			"timeout_ms": 5000,
+			"max_execution_time_ms": 100,
+			"max_memory_usage_mb": 50,
+			"input_buffers": [
+				{
+					"name": "input_a",
+					"size": 1024,
+					"data": [
+						1.0,
+						2.0,
+						3.0,
+						4.0,
+						5.0
+					]
+				},
+				{
+					"name": "input_b",
+					"size": 1024,
+					"data": [
+						2.0,
+						3.0,
+						4.0,
+						5.0,
+						6.0
+					]
+				},
+				{
+					"name": "output",
+					"size": 1024,
+					"data": []
+				}
+			],
+			"assertions": [
+				{
+					"type": "buffer_equals",
+					"description": "First element should be 3.0",
+					"buffer_name": "output",
+					"index": 0,
+					"expected": 3.0
+				},
+				{
+					"type": "buffer_equals",
+					"description": "Second element should be 5.0",
+					"buffer_name": "output",
+					"index": 1,
+					"expected": 5.0
+				},
+				{
+					"type": "buffer_near",
+					"description": "Third element should be approximately 7.0",
+					"buffer_name": "output",
+					"index": 2,
+					"expected": 7.0,
+					"tolerance": 0.001
+				},
+				{
+					"type": "performance_lt",
+					"description": "Execution should complete within 50ms",
+					"threshold_ms": 50.0
+				}
+			]
+		},
+		{
+			"name": "matrix_multiply_performance",
+			"description": "Test matrix multiplication performance",
+			"pipeline_type": "compute",
+			"shader_function": "matrix_multiply",
+			"skip": false,
+			"timeout_ms": 10000,
+			"max_execution_time_ms": 500,
+			"max_memory_usage_mb": 100,
+			"input_buffers": [
+				{
+					"name": "matrix_a",
+					"size": 4096,
+					"data": [
+						1.0,
+						0.0,
+						0.0,
+						1.0
+					]
+				},
+				{
+					"name": "matrix_b",
+					"size": 4096,
+					"data": [
+						2.0,
+						1.0,
+						1.0,
+						2.0
+					]
+				},
+				{
+					"name": "result",
+					"size": 4096,
+					"data": []
+				}
+			],
+			"assertions": [
+				{
+					"type": "buffer_near",
+					"description": "Matrix multiplication identity test",
+					"buffer_name": "result",
+					"index": 0,
+					"expected": 2.0,
+					"tolerance": 0.01
+				},
+				{
+					"type": "performance_lt",
+					"description": "Matrix multiply should complete within 200ms",
+					"threshold_ms": 200.0
+				}
+			]
+		},
+		{
+			"name": "edge_case_zero_division",
+			"description": "Test handling of edge cases like division by zero",
+			"pipeline_type": "compute",
+			"shader_function": "safe_divide",
+			"skip": false,
+			"timeout_ms": 3000,
+			"max_execution_time_ms": 50,
+			"max_memory_usage_mb": 25,
+			"input_buffers": [
+				{
+					"name": "numerator",
+					"size": 100,
+					"data": [
+						10.0,
+						20.0,
+						0.0,
+						-5.0
+					]
+				},
+				{
+					"name": "denominator",
+					"size": 100,
+					"data": [
+						2.0,
+						0.0,
+						5.0,
+						-1.0
+					]
+				},
+				{
+					"name": "result",
+					"size": 100,
+					"data": []
+				}
+			],
+			"assertions": [
+				{
+					"type": "buffer_equals",
+					"description": "Normal division: 10/2 = 5",
+					"buffer_name": "result",
+					"index": 0,
+					"expected": 5.0
+				},
+				{
+					"type": "buffer_equals",
+					"description": "Division by zero should return infinity or NaN",
+					"buffer_name": "result",
+					"index": 1,
+					"expected": 999999.0
+				},
+				{
+					"type": "buffer_equals",
+					"description": "Zero divided by number should be 0",
+					"buffer_name": "result",
+					"index": 2,
+					"expected": 0.0
+				}
+			]
+		},
+		{
+			"name": "memory_intensive_test",
+			"description": "Test with large memory allocations",
+			"pipeline_type": "compute",
+			"shader_function": "memory_test",
+			"skip": false,
+			"timeout_ms": 15000,
+			"max_execution_time_ms": 1000,
+			"max_memory_usage_mb": 200,
+			"input_buffers": [
+				{
+					"name": "large_buffer",
+					"size": 1048576,
+					"data": [
+						1.0,
+						2.0,
+						3.0
+					]
+				}
+			],
+			"assertions": [
+				{
+					"type": "performance_lt",
+					"description": "Large buffer processing should complete within 1 second",
+					"threshold_ms": 1000.0
+				}
+			]
+		},
+		{
+			"name": "skipped_test_example",
+			"description": "This test is intentionally skipped",
+			"pipeline_type": "compute",
+			"shader_function": "unused_function",
+			"skip": true,
+			"skip_reason": "Feature not yet implemented",
+			"timeout_ms": 1000,
+			"max_execution_time_ms": 100,
+			"max_memory_usage_mb": 25,
+			"input_buffers": [],
+			"assertions": []
+		},
+		{
+			"name": "floating_point_precision",
+			"description": "Test floating point precision and rounding",
+			"pipeline_type": "compute",
+			"shader_function": "precision_test",
+			"skip": false,
+			"timeout_ms": 3000,
+			"max_execution_time_ms": 100,
+			"max_memory_usage_mb": 25,
+			"input_buffers": [
+				{
+					"name": "input",
+					"size": 10,
+					"data": [
+						0.1,
+						0.2,
+						0.3,
+						0.4,
+						0.5
+					]
+				},
+				{
+					"name": "output",
+					"size": 10,
+					"data": []
+				}
+			],
+			"assertions": [
+				{
+					"type": "buffer_near",
+					"description": "Floating point addition precision test",
+					"buffer_name": "output",
+					"index": 0,
+					"expected": 0.3,
+					"tolerance": 0.0001
+				},
+				{
+					"type": "buffer_near",
+					"description": "Complex floating point operation",
+					"buffer_name": "output",
+					"index": 1,
+					"expected": 0.04,
+					"tolerance": 0.0001
+				}
+			]
+		}
+	]
+}
