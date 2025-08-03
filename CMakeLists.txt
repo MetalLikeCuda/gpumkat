@@ -1,16 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
-
 project(gpumkat)
 
-# Specify the C++ standard
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-# Add the include directories for json-c
-include_directories(/opt/homebrew/Cellar/json-c/0.17/include)
-
-set(SOURCES
-    main.m
+# Library sources (everything except main)
+set(LIBRARY_SOURCES
     modules/plugin_manager/plugin_manager.m
     modules/debug/debug.m
     modules/debug/timeline_debug.m
@@ -18,25 +10,62 @@ set(SOURCES
     modules/memory_tracker/memory_tracker.m
     modules/pipeline_statistics/pipeline_statistics.m
     modules/visualization/visualization.m
+    modules/testing/testing.m
+    modules/lsp_server/metal_lsp_server.m
+    modules/lsp_server/lsp_integration.m
 )
+
+set(EXECUTABLE_SOURCES
+    main.m
+)
+
+# Create the shared library target
+add_library(gpumkat_lib SHARED ${LIBRARY_SOURCES})
 
 # Create the executable target
-add_executable(gpumkat ${SOURCES})
+add_executable(gpumkat ${EXECUTABLE_SOURCES})
 
-# Link libraries and frameworks
-target_link_libraries(gpumkat
-    /opt/homebrew/Cellar/json-c/0.17/lib/libjson-c.dylib
-    -lcurl
-    -framework Foundation
-    -framework Metal
-    -framework MetalPerformanceShaders
-    -framework QuartzCore
-    -framework AppKit
+# Find required packages
+find_package(CURL REQUIRED)
+
+# Add include directories for both targets
+target_include_directories(gpumkat_lib PRIVATE 
+    /opt/homebrew/Cellar/json-c/0.17/include
+)
+target_include_directories(gpumkat PRIVATE 
+    /opt/homebrew/Cellar/json-c/0.17/include
 )
 
-find_package(CURL REQUIRED)
-target_link_libraries(gpumkat PRIVATE CURL::libcurl)
+# Add library directories for both targets
+target_link_directories(gpumkat_lib PRIVATE 
+    /opt/homebrew/Cellar/json-c/0.17/lib
+)
+target_link_directories(gpumkat PRIVATE 
+    /opt/homebrew/Cellar/json-c/0.17/lib
+)
 
-include_directories(/opt/homebrew/Cellar/json-c/0.17/include)
-target_link_directories(gpumkat PRIVATE /opt/homebrew/Cellar/json-c/0.17/lib)
-target_link_libraries(gpumkat PRIVATE json-c)
+# Link libraries to the shared library
+target_link_libraries(gpumkat_lib PRIVATE
+    json-c
+    CURL::libcurl
+    "-framework Foundation"
+    "-framework Metal"
+    "-framework MetalPerformanceShaders"
+    "-framework QuartzCore"
+    "-framework AppKit"
+)
+
+target_link_libraries(gpumkat PRIVATE
+    gpumkat_lib
+    "-framework Foundation"
+    "-framework CoreGraphics"
+    "-framework CoreImage"
+    "-framework Metal"
+    "-framework MetalPerformanceShaders"
+    "-framework QuartzCore"
+    "-framework AppKit"
+)
+
+set_target_properties(gpumkat_lib PROPERTIES
+    OUTPUT_NAME "gpumkat"
+)
