@@ -4,6 +4,8 @@
 
 a GPU kernel analysis tool for macOS Metal with many features ranging from analyzing performance to energy consumption, cache hit rates, interface metrics, gpu software states, shader optimization recommendations, stack traces, recording timelines and traces and more.
 
+If it says that macOS can't identify if it is malware or not, close it go into settings and allow it to be executed.
+
 ## Requirements:
 
 - any platform that supports metal
