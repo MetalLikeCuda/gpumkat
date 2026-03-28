@@ -1,6 +1,6 @@
-#include "/opt/homebrew/Cellar/json-c/0.17/include/json-c/json.h"
 #import <Foundation/Foundation.h>
 #include <curl/curl.h>
+#include <json-c/json.h>
 
 size_t write_callback(void *contents, size_t size, size_t nmemb, void *userp) {
   size_t total_size = size * nmemb;
