@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.10)
 project(gpumkat)
 
+set(CMAKE_C_FLAGS_RELEASE "-O2 -Wall -Wextra")
+set(CMAKE_BUILD_TYPE Release)
+
 # Library sources (everything except main)
 set(LIBRARY_SOURCES
     modules/plugin_manager/plugin_manager.m
@@ -15,6 +18,7 @@ set(LIBRARY_SOURCES
     modules/lsp_server/lsp_integration.m
 )
 
+# Executable sources
 set(EXECUTABLE_SOURCES
     main.m
 )
@@ -30,18 +34,18 @@ find_package(CURL REQUIRED)
 
 # Add include directories for both targets
 target_include_directories(gpumkat_lib PRIVATE 
-    /opt/homebrew/Cellar/json-c/0.17/include
+    /opt/homebrew/Cellar/json-c/0.18/include
 )
 target_include_directories(gpumkat PRIVATE 
-    /opt/homebrew/Cellar/json-c/0.17/include
+    /opt/homebrew/Cellar/json-c/0.18/include
 )
 
 # Add library directories for both targets
 target_link_directories(gpumkat_lib PRIVATE 
-    /opt/homebrew/Cellar/json-c/0.17/lib
+    /opt/homebrew/Cellar/json-c/0.18/lib
 )
 target_link_directories(gpumkat PRIVATE 
-    /opt/homebrew/Cellar/json-c/0.17/lib
+    /opt/homebrew/Cellar/json-c/0.18/lib
 )
 
 # Link libraries to the shared library
@@ -55,6 +59,7 @@ target_link_libraries(gpumkat_lib PRIVATE
     "-framework AppKit"
 )
 
+# Link the executable to the shared library AND the frameworks it needs
 target_link_libraries(gpumkat PRIVATE
     gpumkat_lib
     "-framework Foundation"
