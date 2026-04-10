@@ -1,4 +1,5 @@
 #include "testing.h"
+#import <QuartzCore/QuartzCore.h>
 #include <mach/mach_time.h>
 #include <sys/resource.h>
 #include <time.h>
@@ -94,29 +95,8 @@ TestSuite *load_test_config(const char *config_path) {
           [[testCaseDict objectForKey:@"max_memory_usage_mb"] doubleValue]
               ?: 100.0;
 
-      // Parse pipeline configuration
-      NSString *pipelineTypeStr = [testCaseDict objectForKey:@"pipeline_type"];
-      if ([pipelineTypeStr isEqualToString:@"render"]) {
-        testCase->pipeline_type = PIPELINE_TYPE_RENDERER;
-        testCase->vertex_shader = strdup(
-            [[testCaseDict objectForKey:@"vertex_shader"] UTF8String] ?: "");
-        testCase->fragment_shader = strdup(
-            [[testCaseDict objectForKey:@"fragment_shader"] UTF8String] ?: "");
-        testCase->render_target_pixel_format =
-            MTLPixelFormatRGBA8Unorm; // Default, can be extended
-        testCase->render_target_width =
-            [[testCaseDict objectForKey:@"render_target_width"]
-                unsignedIntegerValue]
-                ?: 1;
-        testCase->render_target_height =
-            [[testCaseDict objectForKey:@"render_target_height"]
-                unsignedIntegerValue]
-                ?: 1;
-      } else { // Default to compute
-        testCase->pipeline_type = PIPELINE_TYPE_COMPUTE;
-        testCase->shader_function = strdup(
-            [[testCaseDict objectForKey:@"shader_function"] UTF8String] ?: "");
-      }
+      testCase->shader_function = strdup(
+          [[testCaseDict objectForKey:@"shader_function"] UTF8String] ?: "");
 
       // Parse assertions
       NSArray *assertions = [testCaseDict objectForKey:@"assertions"];
@@ -327,167 +307,185 @@ int run_test_suite(TestSuite *suite, const char *metallib_path) {
   return (suite->failed_tests > 0 || suite->error_tests > 0) ? 1 : 0;
 }
 
+static id<MTLBuffer>
+create_compute_buffer_from_image(id<MTLDevice> device,
+                                 ImageBufferConfig *config,
+                                 ProfilerConfig *profilerConfig) {
+  if (!config || !config->image_path)
+    return nil;
+
+  NSString *path = [NSString stringWithUTF8String:config->image_path];
+  NSURL *url = [NSURL fileURLWithPath:path];
+
+  CGImageSourceRef source =
+      CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
+  if (!source) {
+    if (profilerConfig) {
+      record_error(&profilerConfig->debug, ERROR_SEVERITY_ERROR,
+                   ERROR_CATEGORY_BUFFER, "Cannot open image file",
+                   config->name);
+    }
+    return nil;
+  }
+
+  CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
+  CFRelease(source);
+  if (!image) {
+    if (profilerConfig) {
+      record_error(&profilerConfig->debug, ERROR_SEVERITY_ERROR,
+                   ERROR_CATEGORY_BUFFER, "Failed to decode image",
+                   config->name);
+    }
+    return nil;
+  }
+
+  size_t width = CGImageGetWidth(image);
+  size_t height = CGImageGetHeight(image);
+  size_t pixelCount = width * height;
+  size_t floatCount = pixelCount * 4;
+  size_t bufferSize = floatCount * sizeof(float);
+
+  id<MTLBuffer> buffer =
+      [device newBufferWithLength:bufferSize
+                          options:MTLResourceStorageModeShared];
+  if (!buffer) {
+    CGImageRelease(image);
+    if (profilerConfig) {
+      record_error(&profilerConfig->debug, ERROR_SEVERITY_ERROR,
+                   ERROR_CATEGORY_BUFFER, "Failed to allocate buffer",
+                   config->name);
+    }
+    return nil;
+  }
+
+  size_t bytesPerRow = width * 4;
+  uint8_t *tempData = (uint8_t *)malloc(bytesPerRow * height);
+  if (!tempData) {
+    CGImageRelease(image);
+    return nil;
+  }
+
+  CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+  CGContextRef ctx = CGBitmapContextCreate(
+      tempData, width, height, 8, bytesPerRow, colorSpace,
+      kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+  CGColorSpaceRelease(colorSpace);
+
+  if (!ctx) {
+    free(tempData);
+    CGImageRelease(image);
+    return nil;
+  }
+
+  CGContextDrawImage(ctx, CGRectMake(0, 0, width, height), image);
+  CGContextRelease(ctx);
+  CGImageRelease(image);
+
+  float *floatData = (float *)buffer.contents;
+  for (size_t i = 0; i < pixelCount; i++) {
+    size_t byteIdx = i * 4;
+    floatData[i * 4 + 0] = (float)tempData[byteIdx + 0] / 255.0f; // R
+    floatData[i * 4 + 1] = (float)tempData[byteIdx + 1] / 255.0f; // G
+    floatData[i * 4 + 2] = (float)tempData[byteIdx + 2] / 255.0f; // B
+    floatData[i * 4 + 3] = (float)tempData[byteIdx + 3] / 255.0f; // A
+  }
+
+  free(tempData);
+
+  if (config->width == 0)
+    config->width = (uint32_t)width;
+  if (config->height == 0)
+    config->height = (uint32_t)height;
+
+  if (profilerConfig && profilerConfig->debug.enabled) {
+    log_message(profilerConfig, 2, "ImageBuffer",
+                "Loaded '%s' (%zux%zu) as %zu floats", config->name, width,
+                height, floatCount);
+  }
+
+  return buffer;
+}
+
 int run_single_test(TestCase *test_case, TestContext *context) {
   test_case->test_start_time = get_time_ns();
   size_t initial_memory = get_memory_usage_mb();
   NSError *error = nil;
 
-  // Prepare input buffers (common for both pipelines)
   [context->metal_buffers removeAllObjects];
   for (NSDictionary *bufferDict in test_case->buffers) {
     NSString *bufferName = [bufferDict objectForKey:@"name"];
-    NSArray *data = [bufferDict objectForKey:@"data"];
-    NSUInteger size = [[bufferDict objectForKey:@"size"] unsignedIntegerValue]
-                          ?: [data count];
+    NSString *imagePath = [bufferDict objectForKey:@"image_path"];
 
-    id<MTLBuffer> buffer =
-        [context->device newBufferWithLength:size * sizeof(float)
-                                     options:MTLResourceStorageModeShared];
-    if (!buffer) {
-      record_test_result(test_case, TEST_STATUS_ERROR,
-                         "Failed to create buffer");
-      return -1;
+    if (imagePath) {
+      ImageBufferConfig imgCfg = {0};
+      imgCfg.image_path = [imagePath UTF8String];
+      imgCfg.name = [bufferName UTF8String];
+      id<MTLBuffer> buffer =
+          create_compute_buffer_from_image(context->device, &imgCfg, NULL);
+      if (!buffer) {
+        record_test_result(test_case, TEST_STATUS_ERROR,
+                           "Failed to create image compute buffer");
+        return -1;
+      }
+      [context->metal_buffers setObject:buffer forKey:bufferName];
+    } else {
+      NSArray *data = [bufferDict objectForKey:@"data"];
+      NSUInteger size = [[bufferDict objectForKey:@"size"] unsignedIntegerValue]
+                            ?: [data count];
+      id<MTLBuffer> buffer =
+          [context->device newBufferWithLength:size * sizeof(float)
+                                       options:MTLResourceStorageModeShared];
+      if (!buffer) {
+        record_test_result(test_case, TEST_STATUS_ERROR,
+                           "Failed to create buffer");
+        return -1;
+      }
+      float *bufferPtr = (float *)[buffer contents];
+      for (NSUInteger i = 0; i < MIN(size, [data count]); i++) {
+        bufferPtr[i] = [[data objectAtIndex:i] floatValue];
+      }
+      [context->metal_buffers setObject:buffer forKey:bufferName];
     }
-
-    // Initialize buffer with test data
-    float *bufferPtr = (float *)[buffer contents];
-    for (NSUInteger i = 0; i < MIN(size, [data count]); i++) {
-      bufferPtr[i] = [[data objectAtIndex:i] floatValue];
-    }
-
-    [context->metal_buffers setObject:buffer forKey:bufferName];
   }
 
   id<MTLCommandBuffer> commandBuffer = [context->command_queue commandBuffer];
 
-  if (test_case->pipeline_type == PIPELINE_TYPE_RENDERER) {
-    // --- RENDER PIPELINE ---
-    NSString *vertexFuncName =
-        [NSString stringWithUTF8String:test_case->vertex_shader];
-    NSString *fragmentFuncName =
-        [NSString stringWithUTF8String:test_case->fragment_shader];
-    id<MTLFunction> vertexFunc =
-        [context->library newFunctionWithName:vertexFuncName];
-    id<MTLFunction> fragmentFunc =
-        [context->library newFunctionWithName:fragmentFuncName];
-
-    if (!vertexFunc || !fragmentFunc) {
-      record_test_result(test_case, TEST_STATUS_ERROR,
-                         "Render shader function not found");
-      return -1;
-    }
-
-    MTLRenderPipelineDescriptor *pipelineDescriptor =
-        [[MTLRenderPipelineDescriptor alloc] init];
-    pipelineDescriptor.vertexFunction = vertexFunc;
-    pipelineDescriptor.fragmentFunction = fragmentFunc;
-    pipelineDescriptor.colorAttachments[0].pixelFormat =
-        test_case->render_target_pixel_format;
-
-    id<MTLRenderPipelineState> pipelineState =
-        [context->device newRenderPipelineStateWithDescriptor:pipelineDescriptor
-                                                        error:&error];
-    if (!pipelineState) {
-      char error_msg[512];
-      snprintf(error_msg, sizeof(error_msg),
-               "Failed to create render pipeline state: %s",
-               [[error localizedDescription] UTF8String]);
-      record_test_result(test_case, TEST_STATUS_ERROR, error_msg);
-      return -1;
-    }
-
-    MTLTextureDescriptor *texDesc = [MTLTextureDescriptor
-        texture2DDescriptorWithPixelFormat:test_case->render_target_pixel_format
-                                     width:test_case->render_target_width
-                                    height:test_case->render_target_height
-                                 mipmapped:NO];
-    texDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-    id<MTLTexture> renderTargetTexture =
-        [context->device newTextureWithDescriptor:texDesc];
-
-    MTLRenderPassDescriptor *renderPassDescriptor =
-        [MTLRenderPassDescriptor renderPassDescriptor];
-    renderPassDescriptor.colorAttachments[0].texture = renderTargetTexture;
-    renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
-    renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
-    renderPassDescriptor.colorAttachments[0].clearColor =
-        MTLClearColorMake(0, 0, 0, 0);
-
-    id<MTLRenderCommandEncoder> encoder =
-        [commandBuffer renderCommandEncoderWithDescriptor:renderPassDescriptor];
-    [encoder setRenderPipelineState:pipelineState];
-
-    NSUInteger bufferIndex = 0;
-    for (NSString *bufferName in context->metal_buffers) {
-      id<MTLBuffer> buffer = [context->metal_buffers objectForKey:bufferName];
-      [encoder setVertexBuffer:buffer offset:0 atIndex:bufferIndex++];
-    }
-
-    [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip
-                vertexStart:0
-                vertexCount:4];
-    [encoder endEncoding];
-
-    // Copy render target to a buffer for analysis
-    id<MTLBuffer> outputBuffer = [context->device
-        newBufferWithLength:test_case->render_target_width *
-                            test_case->render_target_height * 4 * sizeof(float)
-                    options:MTLResourceStorageModeShared];
-    id<MTLBlitCommandEncoder> blitEncoder = [commandBuffer blitCommandEncoder];
-    [blitEncoder copyFromTexture:renderTargetTexture
-                     sourceSlice:0
-                     sourceLevel:0
-                    sourceOrigin:MTLOriginMake(0, 0, 0)
-                      sourceSize:MTLSizeMake(renderTargetTexture.width,
-                                             renderTargetTexture.height, 1)
-                        toBuffer:outputBuffer
-               destinationOffset:0
-          destinationBytesPerRow:renderTargetTexture.width * 4 * sizeof(float)
-        destinationBytesPerImage:0];
-    [blitEncoder endEncoding];
-    [context->metal_buffers setObject:outputBuffer forKey:@"__render_output"];
-
-  } else {
-    // --- COMPUTE PIPELINE ---
-    NSString *functionName =
-        [NSString stringWithUTF8String:test_case->shader_function];
-    id<MTLFunction> function =
-        [context->library newFunctionWithName:functionName];
-    if (!function) {
-      record_test_result(test_case, TEST_STATUS_ERROR,
-                         "Shader function not found");
-      return -1;
-    }
-
-    id<MTLComputePipelineState> pipelineState =
-        [context->device newComputePipelineStateWithFunction:function
-                                                       error:&error];
-    if (!pipelineState) {
-      char error_msg[512];
-      snprintf(error_msg, sizeof(error_msg),
-               "Failed to create pipeline state: %s",
-               [[error localizedDescription] UTF8String]);
-      record_test_result(test_case, TEST_STATUS_ERROR, error_msg);
-      return -1;
-    }
-
-    id<MTLComputeCommandEncoder> encoder =
-        [commandBuffer computeCommandEncoder];
-    [encoder setComputePipelineState:pipelineState];
-
-    NSUInteger bufferIndex = 0;
-    for (NSString *bufferName in context->metal_buffers) {
-      id<MTLBuffer> buffer = [context->metal_buffers objectForKey:bufferName];
-      [encoder setBuffer:buffer offset:0 atIndex:bufferIndex++];
-    }
-
-    MTLSize gridSize = MTLSizeMake(1024, 1, 1);
-    MTLSize threadGroupSize = MTLSizeMake(32, 1, 1);
-    [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadGroupSize];
-    [encoder endEncoding];
+  NSString *functionName =
+      [NSString stringWithUTF8String:test_case->shader_function];
+  id<MTLFunction> function =
+      [context->library newFunctionWithName:functionName];
+  if (!function) {
+    record_test_result(test_case, TEST_STATUS_ERROR,
+                       "Shader function not found");
+    return -1;
   }
 
-  // Execute and wait
+  id<MTLComputePipelineState> pipelineState =
+      [context->device newComputePipelineStateWithFunction:function
+                                                     error:&error];
+  if (!pipelineState) {
+    char error_msg[512];
+    snprintf(error_msg, sizeof(error_msg),
+             "Failed to create pipeline state: %s",
+             [[error localizedDescription] UTF8String]);
+    record_test_result(test_case, TEST_STATUS_ERROR, error_msg);
+    return -1;
+  }
+
+  id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+  [encoder setComputePipelineState:pipelineState];
+
+  NSUInteger bufferIndex = 0;
+  for (NSString *bufferName in context->metal_buffers) {
+    id<MTLBuffer> buffer = [context->metal_buffers objectForKey:bufferName];
+    [encoder setBuffer:buffer offset:0 atIndex:bufferIndex++];
+  }
+
+  MTLSize gridSize = MTLSizeMake(1024, 1, 1);
+  MTLSize threadGroupSize = MTLSizeMake(32, 1, 1);
+  [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadGroupSize];
+  [encoder endEncoding];
+
   uint64_t execution_start = get_time_ns();
   [commandBuffer commit];
   [commandBuffer waitUntilCompleted];
@@ -497,7 +495,6 @@ int run_single_test(TestCase *test_case, TestContext *context) {
       ns_to_ms(execution_end - execution_start);
   test_case->actual_memory_usage_mb = get_memory_usage_mb() - initial_memory;
 
-  // Check for Metal errors
   if (commandBuffer.error) {
     char error_msg[512];
     snprintf(error_msg, sizeof(error_msg), "Metal execution error: %s",
@@ -506,7 +503,6 @@ int run_single_test(TestCase *test_case, TestContext *context) {
     return -1;
   }
 
-  // Run assertions
   bool all_assertions_passed = true;
   test_case->passed_assertions = 0;
   test_case->failed_assertions = 0;
@@ -526,7 +522,6 @@ int run_single_test(TestCase *test_case, TestContext *context) {
     }
   }
 
-  // Check performance constraints
   if (test_case->actual_execution_time_ms > test_case->max_execution_time_ms) {
     char perf_msg[256];
     snprintf(perf_msg, sizeof(perf_msg),
@@ -546,7 +541,6 @@ int run_single_test(TestCase *test_case, TestContext *context) {
     return -1;
   }
 
-  // Set final test status
   if (all_assertions_passed) {
     record_test_result(test_case, TEST_STATUS_PASSED, NULL);
   } else {
@@ -782,8 +776,6 @@ void free_test_suite(TestSuite *suite) {
     free((void *)test->name);
     free((void *)test->description);
     free((void *)test->shader_function);
-    free((void *)test->vertex_shader);
-    free((void *)test->fragment_shader);
     free((void *)test->skip_reason);
     free((void *)test->failure_message);
 
