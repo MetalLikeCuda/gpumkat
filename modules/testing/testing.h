@@ -76,35 +76,21 @@ typedef struct {
   char *name;
   char *description;
 
-  // Pipeline configuration
-  PipelineType pipeline_type;
-  char *shader_function; // For compute shader
-  char *vertex_shader;   // For render pipeline vertex function
-  char *fragment_shader; // For render pipeline fragment function
+  char *shader_function;
 
-  // Render-specific configuration
-  MTLPixelFormat render_target_pixel_format;
-  NSUInteger render_target_width;
-  NSUInteger render_target_height;
-
-  // Test setup
   NSMutableArray *buffers;
   NSMutableArray *expected_outputs;
 
-  // Assertions to run
   TestAssertion *assertions;
   size_t assertion_count;
 
-  // Test configuration
   bool skip;
   char *skip_reason;
   double timeout_ms;
 
-  // Performance expectations
   double max_execution_time_ms;
   double max_memory_usage_mb;
 
-  // Test results (filled during execution)
   TestStatus status;
   char *failure_message;
   double actual_execution_time_ms;
@@ -112,8 +98,8 @@ typedef struct {
   size_t passed_assertions;
   size_t failed_assertions;
 
-  uint64_t test_start_time; // For timing individual test
-  bool verbose_output;      // For controlling per-test verbosity
+  uint64_t test_start_time;
+  bool verbose_output;
 } TestCase;
 
 // Test suite configuration

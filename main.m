@@ -16,7 +16,7 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 
-#define VERSION "v1.2"
+#define VERSION "v1.21"
 #define MAX_PATH_LEN 256
 
 // -------------------- Hot Reloading --------------------
@@ -127,12 +127,11 @@ void write_trace_event(const char *filename, TraceEvent *events, size_t count) {
 
   fprintf(file, "[\n");
   for (size_t i = 0; i < count; ++i) {
-    fprintf(file,
-            "{\"name\": \"%s\", \"ph\": \"X\", \"ts\": %.6f, \"dur\": %.6f, "
-            "\"pid\": 0, \"tid\": 0}%s\n",
-            events[i].name, events[i].start_time,
-            events[i].end_time - events[i].start_time,
-            (i < count - 1) ? "," : "");
+    fprintf(
+        file,
+        "{\"name\": \"%s\", \"ph\": \"X\", \"ts\": %.6f, \"dur\": %.6f}%s\n",
+        events[i].name, events[i].start_time,
+        events[i].end_time - events[i].start_time, (i < count - 1) ? "," : "");
   }
   fprintf(file, "]\n");
   fclose(file);
@@ -152,6 +151,110 @@ void initialize_buffer(id<MTLBuffer> buffer, BufferConfig *config) {
   if (contentSize < config->size) {
     memset(data + contentSize, 0, (config->size - contentSize) * sizeof(float));
   }
+}
+
+static id<MTLBuffer>
+create_compute_buffer_from_image(id<MTLDevice> device,
+                                 ImageBufferConfig *config,
+                                 ProfilerConfig *profilerConfig) {
+  if (!config || !config->image_path)
+    return nil;
+
+  NSString *path = [NSString stringWithUTF8String:config->image_path];
+  NSURL *url = [NSURL fileURLWithPath:path];
+
+  CGImageSourceRef source =
+      CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
+  if (!source) {
+    if (profilerConfig) {
+      record_error(&profilerConfig->debug, ERROR_SEVERITY_ERROR,
+                   ERROR_CATEGORY_BUFFER, "Cannot open image file",
+                   config->name);
+    }
+    return nil;
+  }
+
+  CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
+  CFRelease(source);
+  if (!image) {
+    if (profilerConfig) {
+      record_error(&profilerConfig->debug, ERROR_SEVERITY_ERROR,
+                   ERROR_CATEGORY_BUFFER, "Failed to decode image",
+                   config->name);
+    }
+    return nil;
+  }
+
+  size_t width = CGImageGetWidth(image);
+  size_t height = CGImageGetHeight(image);
+  size_t pixelCount = width * height;
+
+  // Allocate Metal buffer for float4 per pixel
+  size_t floatCount = pixelCount * 4;
+  size_t bufferSize = floatCount * sizeof(float);
+  id<MTLBuffer> buffer =
+      [device newBufferWithLength:bufferSize
+                          options:MTLResourceStorageModeShared];
+  if (!buffer) {
+    CGImageRelease(image);
+    if (profilerConfig) {
+      record_error(&profilerConfig->debug, ERROR_SEVERITY_ERROR,
+                   ERROR_CATEGORY_BUFFER, "Failed to allocate buffer",
+                   config->name);
+    }
+    return nil;
+  }
+
+  // Draw image into a temporary RGBA8 context, then convert to floats
+  size_t bytesPerRow = width * 4;
+  uint8_t *tempData = (uint8_t *)malloc(bytesPerRow * height);
+  if (!tempData) {
+    CGImageRelease(image);
+    return nil;
+  }
+
+  CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+  CGContextRef context = CGBitmapContextCreate(
+      tempData, width, height, 8, bytesPerRow, colorSpace,
+      kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+  CGColorSpaceRelease(colorSpace);
+
+  if (!context) {
+    free(tempData);
+    CGImageRelease(image);
+    return nil;
+  }
+
+  CGRect rect = CGRectMake(0, 0, width, height);
+  CGContextDrawImage(context, rect, image);
+  CGContextRelease(context);
+  CGImageRelease(image);
+
+  // Convert RGBA8 → float4
+  float *floatData = (float *)buffer.contents;
+  for (size_t i = 0; i < pixelCount; i++) {
+    size_t byteIdx = i * 4;
+    floatData[i * 4 + 0] = (float)tempData[byteIdx + 0] / 255.0f; // R
+    floatData[i * 4 + 1] = (float)tempData[byteIdx + 1] / 255.0f; // G
+    floatData[i * 4 + 2] = (float)tempData[byteIdx + 2] / 255.0f; // B
+    floatData[i * 4 + 3] = (float)tempData[byteIdx + 3] / 255.0f; // A
+  }
+
+  free(tempData);
+
+  // Update config dimensions if they were unset
+  if (config->width == 0)
+    config->width = (uint32_t)width;
+  if (config->height == 0)
+    config->height = (uint32_t)height;
+
+  if (profilerConfig && profilerConfig->debug.enabled) {
+    log_message(profilerConfig, 2, "ImageBuffer",
+                "Loaded '%s' (%zux%zu) as %zu floats", config->name, width,
+                height, floatCount);
+  }
+
+  return buffer;
 }
 
 id<MTLBuffer> create_buffer_with_error_checking(id<MTLDevice> device,
@@ -180,6 +283,7 @@ void handle_sigint(int sig) {
   stop_metal_lsp_server();
 }
 // --------------------------------------------------------------------------Main--------------------------------------------------------------------------
+
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
     PluginManager plugin_manager;
@@ -405,40 +509,15 @@ int main(int argc, const char *argv[]) {
       return 0;
     } else if (strcmp(argv[1], "-help") == 0) {
       printf("Usage: gpumkat <path_to_config_file>\n");
-      printf("Core image shader profiling session: gpumkat "
-             "<path_to_config_file> -ci <shader_name>\n");
-      printf("Commands:\n");
+      printf("Options:\n");
+      printf("-test <path_to_config_file>: Runs a metal test\n");
       printf("-update: Check for and download the latest version\n");
       printf("-remove_plugin <plugin_name>: Remove a plugin\n");
       printf("-add_plugin <plugin_source_file>: Add a plugin\n");
       printf("--version: Display version information\n");
       printf("-help: Display this help message\n");
-      printf("\nTesting Framework:\n");
-      printf("The testing framework allows you to create comprehensive test "
-             "suites\n");
-      printf("for your GPU compute kernels with the following features:\n");
-      printf("  • Automated test execution and result validation\n");
-      printf("  • Performance benchmarking and regression testing\n");
-      printf("  • Memory usage monitoring\n");
-      printf(
-          "  • Multiple assertion types (equals, near, buffer comparisons)\n");
-      printf("  • HTML test reports generation\n");
-      printf("  • Test filtering and selective execution\n");
-      printf("  • Detailed error reporting and debugging information\n");
-      printf("\nExample test workflow:\n");
-      printf("  1. Edit test_config.json to define your test cases\n");
-      printf("  2. gpumkat -test my_tests.json shaders.metallib\n");
-      printf("  3. Review generated HTML report for detailed results\n");
-      printf("LSP Server Commands:\n");
-      printf("  -lsp                          : Start Metal LSP server (stdio "
+      printf("  -lsp : Start Metal LSP server (stdio "
              "mode)\n");
-      printf("\nLSP Integration:\n");
-      printf("  The Metal LSP server provides language support for Metal "
-             "shading language\n");
-      printf("  including syntax highlighting, completions, diagnostics, and "
-             "more.\n");
-      printf("\nEditor Integration:\n");
-      printf("  • Neovim: Add to your LSP config\n");
       return 0;
     }
 
@@ -466,12 +545,12 @@ int main(int argc, const char *argv[]) {
       log_message(config, 2, "Debug", "Verbosity Level: %d",
                   config->debug.verbosity_level);
       NSLog(@"Step-by-step: %@", config->debug.step_by_step ? @"Yes" : @"No");
-      log_message(config, 2, "Debug", "Step-by-step: %@",
-                  config->debug.step_by_step ? @"Yes" : @"No");
+      log_message(config, 2, "Debug", "Step-by-step: %s",
+                  config->debug.step_by_step ? "Yes" : "No");
       NSLog(@"Variable tracking: %@",
             config->debug.print_variables ? @"Yes" : @"No");
-      log_message(config, 2, "Debug", "Variable tracking: %@",
-                  config->debug.print_variables ? @"Yes" : @"No");
+      log_message(config, 2, "Debug", "Variable tracking: %s",
+                  config->debug.print_variables ? "Yes" : "No");
     }
 
     AsyncCommandDebugExtension async_debug_ext = {0};
@@ -490,7 +569,7 @@ int main(int argc, const char *argv[]) {
       low_end_gpu_sim.memory = config->debug.low_end_gpu.memory;
       low_end_gpu_sim.thermal = config->debug.low_end_gpu.thermal;
       low_end_gpu_sim.logging = config->debug.low_end_gpu.logging;
-      low_end_gpu_sim.rendering = config->debug.low_end_gpu.rendering;
+      init_low_end_gpu_log_file(&low_end_gpu_sim);
     }
 
     init_timeline(&config->debug);
@@ -547,37 +626,15 @@ int main(int argc, const char *argv[]) {
 
     id pipelineState = nil;
 
-    if (config->pipeline_type == PIPELINE_TYPE_COMPUTE) {
-      pipelineState = [device newComputePipelineStateWithFunction:function
-                                                            error:&error];
+    pipelineState = [device newComputePipelineStateWithFunction:function
+                                                          error:&error];
 
-      if (!pipelineState) {
-        record_error(
-            &config->debug, ERROR_SEVERITY_FATAL, ERROR_CATEGORY_PIPELINE,
-            [[error localizedDescription] UTF8String], "PipelineSetup");
-        return -1;
-      }
-    } else {
-      MTLRenderPipelineDescriptor *renderPipelineDescriptor =
-          [[MTLRenderPipelineDescriptor alloc] init];
-      renderPipelineDescriptor.vertexFunction =
-          [library newFunctionWithName:@"vertexShader"];
-      renderPipelineDescriptor.fragmentFunction = function;
-      renderPipelineDescriptor.colorAttachments[0].pixelFormat =
-          MTLPixelFormatBGRA8Unorm;
-
-      pipelineState =
-          [device newRenderPipelineStateWithDescriptor:renderPipelineDescriptor
-                                                 error:&error];
-
-      if (!pipelineState) {
-        record_error(
-            &config->debug, ERROR_SEVERITY_FATAL, ERROR_CATEGORY_PIPELINE,
-            [[error localizedDescription] UTF8String], "RenderPipelineSetup");
-        return -1;
-      }
+    if (!pipelineState) {
+      record_error(&config->debug, ERROR_SEVERITY_FATAL,
+                   ERROR_CATEGORY_PIPELINE,
+                   [[error localizedDescription] UTF8String], "PipelineSetup");
+      return -1;
     }
-
     pthread_t hot_reload_thread =
         start_hot_reload(device, metallibFilePathString, &library);
 
@@ -591,10 +648,6 @@ int main(int argc, const char *argv[]) {
     add_event_marker("BufferSetup", "Creating and preparing buffers");
 
     NSMutableDictionary *metalBuffers = [NSMutableDictionary dictionary];
-
-    if (config->image_buffers > 0) {
-      initialize_image_buffers(device, config);
-    }
 
     id<MTLCommandQueue> commandQueue = [device newCommandQueue];
     if (!commandQueue) {
@@ -645,78 +698,33 @@ int main(int argc, const char *argv[]) {
       ImageBufferConfig *imageConfig = nil;
       for (NSValue *imgValue in config->image_buffers) {
         ImageBufferConfig *tempImageConfig = [imgValue pointerValue];
-
         if (strcmp(bufferConfig->name, tempImageConfig->name) == 0) {
           imageConfig = tempImageConfig;
-          break; // Found matching image buffer, no need to continue
+          break;
         }
       }
 
-      // Skip if no matching ImageBufferConfig was found
-      if (!imageConfig) {
-        continue;
-      }
+      // If this buffer corresponds to an image, create compute buffer with
+      // pixel data
+      if (imageConfig) {
+        // Skip Core Image filtering entirely — treat as compute buffer
+        id<MTLBuffer> imageComputeBuffer = buffer =
+            create_compute_buffer_from_image(device, imageConfig, config);
+        if (imageComputeBuffer) {
+          metalBuffers[@(bufferConfig->name)] = imageComputeBuffer;
+          track_allocation(imageComputeBuffer, imageComputeBuffer.length,
+                           bufferConfig->name);
 
-      if (strcmp(argv[2], "-ci") == 0) {
-        const char *filterName =
-            argv[3]; // Get the filter name from command line
-        size_t width = imageConfig->width;
-        size_t height = imageConfig->height;
-
-        // Create a Core Image context for Metal
-        CIContext *ciContext = [CIContext contextWithMTLDevice:device];
-
-        // Convert the Metal buffer to a Metal texture
-        MTLTextureDescriptor *textureDescriptor =
-            [[MTLTextureDescriptor alloc] init];
-        textureDescriptor.pixelFormat = MTLPixelFormatBGRA8Unorm;
-        textureDescriptor.width = width;
-        textureDescriptor.height = height;
-        textureDescriptor.usage =
-            MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
-
-        id<MTLTexture> inputTexture =
-            [device newTextureWithDescriptor:textureDescriptor];
-        id<MTLTexture> outputTexture =
-            [device newTextureWithDescriptor:textureDescriptor];
-
-        // Convert Metal texture to CIImage
-        CIImage *ciImage = [CIImage imageWithMTLTexture:inputTexture
-                                                options:nil];
-
-        // Apply Core Image filter
-        CIFilter *ciFilter = [CIFilter
-            filterWithName:[NSString stringWithUTF8String:filterName]];
-        if (!ciFilter) {
-          fprintf(stderr, "Error: Invalid Core Image filter name: %s\n",
-                  filterName);
-          return EXIT_FAILURE;
+          if (config->debug.enabled && config->debug.print_variables) {
+            print_buffer_state(imageComputeBuffer, bufferConfig->name,
+                               imageComputeBuffer.length);
+          }
+        } else {
+          record_error(
+              &config->debug, ERROR_SEVERITY_ERROR, ERROR_CATEGORY_BUFFER,
+              "Failed to load image into compute buffer", bufferConfig->name);
         }
-        [ciFilter setValue:ciImage forKey:kCIInputImageKey];
-
-        CIImage *outputImage = [ciFilter outputImage];
-        if (!outputImage) {
-          fprintf(stderr, "Error: Failed to process image with filter %s\n",
-                  filterName);
-          return EXIT_FAILURE;
-        }
-
-        id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
-
-        // Render the filtered CIImage back to a Metal texture
-        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-        [ciContext render:outputImage
-             toMTLTexture:outputTexture
-            commandBuffer:commandBuffer
-                   bounds:outputImage.extent
-               colorSpace:colorSpace];
-        CGColorSpaceRelease(colorSpace);
-
-        printf("Applied filter %s to buffer %s\n", filterName,
-               bufferConfig->name);
-
-        // Store the filtered output texture in Metal buffer storage
-        metalBuffers[@(bufferConfig->name)] = outputTexture;
+        continue; // Skip normal buffer creation for this config entry
       }
     }
 
@@ -762,179 +770,93 @@ int main(int argc, const char *argv[]) {
     }
 
     __block PipelineStats stats = {0};
-    __block RenderPipelineStats render_stats = {0};
 
     // Set up performance monitoring
-    if (config->pipeline_type == PIPELINE_TYPE_COMPUTE) {
-      stats = collect_pipeline_statistics(commandBuffer, pipelineState);
+    stats = collect_pipeline_statistics(commandBuffer, pipelineState);
+
+    id<MTLComputeCommandEncoder> encoder =
+        [commandBuffer computeCommandEncoder];
+    if (!encoder) {
+      record_error(
+          &config->debug, ERROR_SEVERITY_FATAL, ERROR_CATEGORY_COMMAND_ENCODER,
+          "Failed to create compute command encoder", "EncoderCreation");
+      return -1;
     }
 
-    if (config->pipeline_type == PIPELINE_TYPE_COMPUTE) {
-      id<MTLComputeCommandEncoder> encoder =
-          [commandBuffer computeCommandEncoder];
-      if (!encoder) {
-        record_error(&config->debug, ERROR_SEVERITY_FATAL,
-                     ERROR_CATEGORY_COMMAND_ENCODER,
-                     "Failed to create compute command encoder",
-                     "EncoderCreation");
-        return -1;
+    // Dispatch kernel
+    if (config->debug.enabled) {
+      check_breakpoints(&config->debug, "BeforeDispatch");
+    }
+    [encoder setComputePipelineState:pipelineState];
+
+    // Set buffers with debug info
+    int bufferIndex = 0;
+    for (NSValue *value in config->buffers) {
+      BufferConfig *bufferConfig = value.pointerValue;
+      [encoder setBuffer:metalBuffers[@(bufferConfig->name)]
+                  offset:0
+                 atIndex:bufferIndex];
+      if ([value pointerValue] != (void *)[value pointerValue]) {
+        record_error(&config->debug, ERROR_SEVERITY_ERROR,
+                     ERROR_CATEGORY_BUFFER, "Buffer not found for index",
+                     bufferConfig->name);
+        continue;
       }
 
-      // Dispatch kernel
-      if (config->debug.enabled) {
-        check_breakpoints(&config->debug, "BeforeDispatch");
+      if (config->debug.enabled && config->debug.verbosity_level >= 2) {
+        NSLog(@"Set buffer '%s' at index %d", bufferConfig->name, bufferIndex);
+        log_message(config, 2, "Debug", "Set buffer '%s' at index %d",
+                    bufferConfig->name, bufferIndex);
       }
-      [encoder setComputePipelineState:pipelineState];
+      capture_command_buffer_state(&config->debug, commandBuffer,
+                                   bufferConfig->name);
+      bufferIndex++;
+    }
 
-      // Set buffers with debug info
-      int bufferIndex = 0;
-      for (NSValue *value in config->buffers) {
-        BufferConfig *bufferConfig = value.pointerValue;
-        [encoder setBuffer:metalBuffers[@(bufferConfig->name)]
-                    offset:0
-                   atIndex:bufferIndex];
-        if ([value pointerValue] != (void *)[value pointerValue]) {
-          record_error(&config->debug, ERROR_SEVERITY_ERROR,
-                       ERROR_CATEGORY_BUFFER, "Buffer not found for index",
-                       bufferConfig->name);
-          continue;
-        }
+    // Configure and dispatch threads with debug info
+    MTLSize gridSize = MTLSizeMake(1024, 1, 1);
+    MTLSize threadGroupSize = MTLSizeMake(32, 1, 1);
 
-        if (config->debug.enabled && config->debug.verbosity_level >= 2) {
-          NSLog(@"Set buffer '%s' at index %d", bufferConfig->name,
-                bufferIndex);
-          log_message(config, 2, "Debug", "Set buffer '%s' at index %d",
-                      bufferConfig->name, bufferIndex);
-        }
-        capture_command_buffer_state(&config->debug, commandBuffer,
-                                     bufferConfig->name);
-        bufferIndex++;
-      }
+    if (config->debug.enabled && config->debug.verbosity_level >= 1) {
+      NSLog(@"\n=== Thread Configuration ===");
+      log_message(config, 2, "Debug", "\n=== Thread Configuration ===");
+      NSLog(@"Grid Size: %lux%lux%lu", gridSize.width, gridSize.height,
+            gridSize.depth);
+      log_message(config, 2, "Debug", "Grid Size: %lux%lux%lu", gridSize.width,
+                  gridSize.height, gridSize.depth);
+      NSLog(@"Thread Group Size: %lux%lux%lu", threadGroupSize.width,
+            threadGroupSize.height, threadGroupSize.depth);
+      log_message(config, 2, "Debug", "Thread Group Size: %lux%lux%lu",
+                  threadGroupSize.width, threadGroupSize.height,
+                  threadGroupSize.depth);
+    }
 
-      // Configure and dispatch threads with debug info
+    [metalBuffers enumerateKeysAndObjectsUsingBlock:^(
+                      NSString *key, id<MTLBuffer> buffer, BOOL *stop) {
+      generate_all_buffer_visualizations(buffer, [key UTF8String], true);
+    }];
+
+    if (config->debug.enabled && config->debug.break_before_dispatch) {
+      debug_pause("About to dispatch compute kernel");
+    }
+
+    if (low_end_gpu_sim.enabled) {
+      NSLog(@"\n=== Low-End GPU Simulation Enabled ===");
+      log_message(config, 2, "Debug",
+                  "\n=== Low-End GPU Simulation Enabled ===");
       MTLSize gridSize = MTLSizeMake(1024, 1, 1);
       MTLSize threadGroupSize = MTLSizeMake(32, 1, 1);
 
-      if (config->debug.enabled && config->debug.verbosity_level >= 1) {
-        NSLog(@"\n=== Thread Configuration ===");
-        log_message(config, 2, "Debug", "\n=== Thread Configuration ===");
-        NSLog(@"Grid Size: %lux%lux%lu", gridSize.width, gridSize.height,
-              gridSize.depth);
-        log_message(config, 2, "Debug", "Grid Size: %lux%lux%lu",
-                    gridSize.width, gridSize.height, gridSize.depth);
-        NSLog(@"Thread Group Size: %lux%lux%lu", threadGroupSize.width,
-              threadGroupSize.height, threadGroupSize.depth);
-        log_message(config, 2, "Debug", "Thread Group Size: %lux%lux%lu",
-                    threadGroupSize.width, threadGroupSize.height,
-                    threadGroupSize.depth);
-      }
-
-      [metalBuffers enumerateKeysAndObjectsUsingBlock:^(
-                        NSString *key, id<MTLBuffer> buffer, BOOL *stop) {
-        generate_all_buffer_visualizations(buffer, [key UTF8String], true);
-      }];
-
-      if (config->debug.enabled && config->debug.break_before_dispatch) {
-        debug_pause("About to dispatch compute kernel");
-      }
-
-      if (low_end_gpu_sim.enabled) {
-        NSLog(@"\n=== Low-End GPU Simulation Enabled ===");
-        log_message(config, 2, "Debug",
-                    "\n=== Low-End GPU Simulation Enabled ===");
-        MTLSize gridSize = MTLSizeMake(1024, 1, 1);
-        MTLSize threadGroupSize = MTLSizeMake(32, 1, 1);
-
-        simulate_low_end_gpu(&low_end_gpu_sim, encoder, &gridSize,
-                             &threadGroupSize);
-      } else {
-        configure_thread_execution(encoder, &config->debug, &gridSize,
-                                   &threadGroupSize);
-      }
-
+      simulate_low_end_gpu(&low_end_gpu_sim, encoder, &gridSize,
+                           &threadGroupSize);
+    } else {
       configure_thread_execution(encoder, &config->debug, &gridSize,
                                  &threadGroupSize);
-      [encoder endEncoding];
-    } else {
-      MTLTextureDescriptor *textureDescriptor = [MTLTextureDescriptor
-          texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
-                                       width:1024
-                                      height:1024
-                                   mipmapped:NO];
-      textureDescriptor.usage =
-          MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-      id<MTLTexture> renderTarget =
-          [device newTextureWithDescriptor:textureDescriptor];
-
-      // Create render pass descriptor
-      MTLRenderPassDescriptor *renderPassDescriptor =
-          [MTLRenderPassDescriptor renderPassDescriptor];
-      renderPassDescriptor.colorAttachments[0].texture = renderTarget;
-      renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
-      renderPassDescriptor.colorAttachments[0].storeAction =
-          MTLStoreActionStore;
-      renderPassDescriptor.colorAttachments[0].clearColor =
-          MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
-
-      // Create render command encoder
-      id<MTLRenderCommandEncoder> renderEncoder = [commandBuffer
-          renderCommandEncoderWithDescriptor:renderPassDescriptor];
-      if (!renderEncoder) {
-        record_error(&config->debug, ERROR_SEVERITY_FATAL,
-                     ERROR_CATEGORY_COMMAND_ENCODER,
-                     "Failed to create render command encoder",
-                     "RenderEncoderCreation");
-        return -1;
-      }
-
-      if (config->debug.enabled) {
-        check_breakpoints(&config->debug, "BeforeRenderDispatch");
-      }
-
-      [renderEncoder setRenderPipelineState:pipelineState];
-
-      int bufferIndex = 0;
-      for (NSValue *value in config->buffers) {
-        BufferConfig *bufferConfig = value.pointerValue;
-        [renderEncoder setVertexBuffer:metalBuffers[@(bufferConfig->name)]
-                                offset:0
-                               atIndex:bufferIndex];
-        [renderEncoder setFragmentBuffer:metalBuffers[@(bufferConfig->name)]
-                                  offset:0
-                                 atIndex:bufferIndex];
-
-        if ([value pointerValue] != (void *)[value pointerValue]) {
-          record_error(&config->debug, ERROR_SEVERITY_ERROR,
-                       ERROR_CATEGORY_BUFFER, "Buffer not found for index",
-                       bufferConfig->name);
-          continue;
-        }
-
-        if (config->debug.enabled && config->debug.verbosity_level >= 2) {
-          NSLog(@"Set buffer '%s' at index %d for both vertex and fragment "
-                @"stages",
-                bufferConfig->name, bufferIndex);
-          log_message(
-              config, 2, "Debug",
-              "Set buffer '%s' at index %d for both vertex and fragment stages",
-              bufferConfig->name, bufferIndex);
-        }
-        bufferIndex++;
-      }
-
-      render_stats = collect_render_pipeline_statistics(
-          commandBuffer, pipelineState, renderPassDescriptor, bufferIndex + 1,
-          1, 1);
-
-      [renderEncoder drawPrimitives:MTLPrimitiveTypeTriangle
-                        vertexStart:0
-                        vertexCount:bufferIndex];
-
-      simulate_low_end_gpu_rendering(&low_end_gpu_sim, renderEncoder,
-                                     bufferIndex + 1, 1);
-
-      [renderEncoder endEncoding];
     }
+
+    configure_thread_execution(encoder, &config->debug, &gridSize,
+                               &threadGroupSize);
+    [encoder endEncoding];
 
     if (config->debug.async_debug.config.enable_async_tracking) {
       [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
@@ -965,32 +887,17 @@ int main(int argc, const char *argv[]) {
                       CACurrentMediaTime());
         }
 
-        if (config->pipeline_type == PIPELINE_TYPE_COMPUTE) {
-          // Update final statistics
-          stats.gpuTime = buffer.GPUEndTime - buffer.GPUStartTime;
+        // Update final statistics
+        stats.gpuTime = buffer.GPUEndTime - buffer.GPUStartTime;
 
-          NSLog(@"\n=== Performance Summary ===");
-          log_message(config, 2, "Debug", "\n=== Performance Summary ===");
+        NSLog(@"\n=== Performance Summary ===");
+        log_message(config, 2, "Debug", "\n=== Performance Summary ===");
 
-          NSLog(@"GPU Time: %.3f ms", stats.gpuTime * 1000.0);
-          log_message(config, 2, "Debug", "GPU Time: %.3f ms",
-                      stats.gpuTime * 1000.0);
-          NSLog(@"CPU Usage: %.2f%%", stats.cpuUsage);
-          log_message(config, 2, "Debug", "CPU Usage: %.2f%%", stats.cpuUsage);
-        } else {
-          render_stats.gpuTime = buffer.GPUEndTime - buffer.GPUStartTime;
-
-          NSLog(@"\n=== Performance Summary ===");
-          log_message(config, 2, "Debug", "\n=== Performance Summary ===");
-
-          NSLog(@"GPU Time: %.3f ms", render_stats.gpuTime * 1000.0);
-          log_message(config, 2, "Debug", "GPU Time: %.3f ms",
-                      render_stats.gpuTime * 1000.0);
-          render_stats.cpuUsage = stats.cpuUsage;
-          NSLog(@"CPU Usage: %.2f%%", render_stats.cpuUsage * 100.0);
-          log_message(config, 2, "Debug", "CPU Usage: %.2f%%",
-                      render_stats.cpuUsage * 100.0);
-        }
+        NSLog(@"GPU Time: %.3f ms", stats.gpuTime * 1000.0);
+        log_message(config, 2, "Debug", "GPU Time: %.3f ms",
+                    stats.gpuTime * 1000.0);
+        NSLog(@"CPU Usage: %.2f%%", stats.cpuUsage);
+        log_message(config, 2, "Debug", "CPU Usage: %.2f%%", stats.cpuUsage);
       }];
     }
 
@@ -1011,12 +918,14 @@ int main(int argc, const char *argv[]) {
     [metalBuffers enumerateKeysAndObjectsUsingBlock:^(
                       NSString *key, id<MTLBuffer> buffer, BOOL *stop) {
       float *data = (float *)[buffer contents];
-      NSLog(@"\nBuffer %@ sample (first 10 elements):", key);
+      const char *keyStr = [key UTF8String];
+      NSLog(@"\nBuffer %s sample (first 10 elements):", keyStr);
       log_message(config, 2, "Debug",
-                  "\nBuffer %@ sample (first 10 elements):", key);
-      for (int i = 0; i < MIN(10, buffer.length / sizeof(float)); i++) {
-        NSLog(@"%@[%d] = %.2f", key, i, data[i]);
-        log_message(config, 2, "Debug", "%@[%d] = %.2f", key, i, data[i]);
+                  "\nBuffer %s sample (first 10 elements):", keyStr);
+      int count = (int)MIN(10, buffer.length / sizeof(float));
+      for (int i = 0; i < count; i++) {
+        NSLog(@"%s[%d] = %.2f", keyStr, i, data[i]);
+        log_message(config, 2, "Debug", "%s[%d] = %.2f", keyStr, i, data[i]);
       }
     }];
 
@@ -1098,13 +1007,6 @@ int main(int argc, const char *argv[]) {
       pthread_join(hot_reload_thread, NULL);
     }
 
-    free((void *)config->metallib_path);
-    free((void *)config->function_name);
-    [config->buffers release];
-    free(config);
-
-    add_event_marker("ProfilerEnd", "Profiler shutdown complete");
-
     double totalTime = convert_time_to_seconds(validationTimer.end_time -
                                                setupTimer.start_time);
     NSLog(@"\n=== Final Timing Summary ===");
@@ -1112,6 +1014,14 @@ int main(int argc, const char *argv[]) {
     NSLog(@"Total execution time: %.6f seconds", totalTime);
     log_message(config, 2, "Debug", "Total execution time: %.6f seconds",
                 totalTime);
+
+    // free AFTER logging
+    free((void *)config->metallib_path);
+    free((void *)config->function_name);
+    [config->buffers release];
+    free(config);
+
+    add_event_marker("ProfilerEnd", "Profiler shutdown complete");
 
     if (is_lsp_server_running()) {
       stop_metal_lsp_server();

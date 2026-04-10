@@ -100,13 +100,6 @@ typedef struct {
 } TimelineConfig;
 
 typedef struct {
-  float fillrate_reduction;        // 0.0-1.0 (percentage of reduction)
-  float texture_quality_reduction; // 0.0-1.0 (percentage of reduction)
-  bool reduce_draw_distance;       // Whether to simulate reduced draw distance
-  float draw_distance_factor; // 0.0-1.0 (percentage of normal draw distance)
-} RenderingSimulation;
-
-typedef struct {
   bool enabled;
 
   // Compute Simulation
@@ -122,15 +115,12 @@ typedef struct {
     float bandwidth_reduction; // 0.0 - 1.0 (% of bandwidth reduction)
     float latency_multiplier;  // 1.0+ (increased latency)
     size_t available_memory;   // Simulated available memory in bytes
-    float
-        memory_error_rate; // 0.0 - 1.0 (probability of memory transfer errors)
+    float memory_error_rate;   // 0.0 - 1.0 (probability of memory transfer
+                               // errors)
   } memory;
 
   // Thermal and Power Simulation
   struct {
-    float thermal_throttling_threshold; // Temperature at which performance
-                                        // degrades
-    float power_limit;                  // Maximum power consumption
     bool enable_thermal_simulation;
   } thermal;
 
@@ -140,7 +130,6 @@ typedef struct {
     char *log_file_path;
   } logging;
 
-  RenderingSimulation rendering;
 } LowEndGpuSimulation;
 
 typedef struct {
@@ -223,16 +212,11 @@ void debug_pause(const char *message) {
   getchar();
 }
 
-typedef enum {
-  PIPELINE_TYPE_COMPUTE, // Default
-  PIPELINE_TYPE_RENDERER // Graphics pipeline
-} PipelineType;
-
 typedef struct {
   const char *metallib_path;
   const char *function_name;
   NSMutableArray *buffers;
-  NSMutableArray *image_buffers; // New field for image buffers
+  NSMutableArray *image_buffers;
   DebugConfig debug;
   struct {
     bool enabled;
@@ -240,7 +224,6 @@ typedef struct {
     int log_level; // 0=errors only, 1=warnings, 2=info, 3=debug
     bool log_timestamps;
   } logging;
-  PipelineType pipeline_type;
 } ProfilerConfig;
 
 typedef struct {
@@ -477,13 +460,30 @@ bool is_compute_unit_available(LowEndGpuSimulation *sim, int unit_index) {
   return random_check <= availability;
 }
 
+static float get_thermal_throttle_factor(void) {
+  NSProcessInfoThermalState state = [[NSProcessInfo processInfo] thermalState];
+
+  switch (state) {
+  case NSProcessInfoThermalStateNominal:
+    return 1.0f;
+  case NSProcessInfoThermalStateFair:
+    return 1.15f;
+  case NSProcessInfoThermalStateSerious:
+    return 1.5f;
+  case NSProcessInfoThermalStateCritical:
+    return 2.25f;
+  default:
+    return 1.0f;
+  }
+}
+
 void simulate_low_end_gpu(LowEndGpuSimulation *sim,
                           id<MTLComputeCommandEncoder> encoder,
                           MTLSize *gridSize, MTLSize *threadGroupSize) {
   if (!sim->enabled)
     return;
 
-  NSLog(@"\n=== Advanced Low-End GPU Simulation ===");
+  NSLog(@"\n=== Low-End GPU Simulation ===");
 
   MTLSize originalGridSize = *gridSize;
   MTLSize simulatedThreadGroupSize = *threadGroupSize;
@@ -525,23 +525,12 @@ void simulate_low_end_gpu(LowEndGpuSimulation *sim,
   }
 
   if (sim->thermal.enable_thermal_simulation) {
-    float workload_factor = (originalGridSize.width * originalGridSize.height *
-                             originalGridSize.depth) /
-                            (1000000.0); // Normalize to reasonable number
-
-    float simulated_temperature =
-        60.0 + (workload_factor * 20.0) + (rand() % 10);
-
-    if (simulated_temperature >= sim->thermal.thermal_throttling_threshold) {
-      float throttle_factor =
-          1.0 +
-          ((simulated_temperature - sim->thermal.thermal_throttling_threshold) /
-           10.0);
-
+    float throttle_factor = get_thermal_throttle_factor();
+    if (throttle_factor > 1.0f) {
       execution_delay_factor *= throttle_factor;
-
-      NSLog(@"Thermal Throttling Activated at %.1f°C (Throttle Factor: %.2fx)",
-            simulated_temperature, throttle_factor);
+      NSLog(@"Thermal Throttling Active "
+            @"(system state factor: %.2fx)",
+            throttle_factor);
     }
   }
 
@@ -568,8 +557,8 @@ void simulate_low_end_gpu(LowEndGpuSimulation *sim,
   for (NSUInteger pass = 0; pass < total_passes; pass++) {
     if (execution_delay_factor > 1.0) {
       uint64_t delay_microseconds = (uint64_t)(1000 * execution_delay_factor);
-      usleep(delay_microseconds); // Actually insert delay proportional to
-                                  // simulation factors
+      usleep(delay_microseconds); // Actually insert delay proportional
+                                  // to simulation factors
     }
 
     // Dispatch with simulated constraints
@@ -581,121 +570,48 @@ void simulate_low_end_gpu(LowEndGpuSimulation *sim,
         execution_delay_factor * total_passes);
 }
 
-void simulate_low_end_gpu_rendering(LowEndGpuSimulation *sim,
-                                    id<MTLRenderCommandEncoder> encoder,
-                                    NSUInteger vertexCount,
-                                    NSUInteger instanceCount) {
-  if (!sim->enabled)
+void init_low_end_gpu_log_file(LowEndGpuSimulation *gpu) {
+  if (!gpu->enabled || !gpu->logging.detailed_logging) {
     return;
-
-  NSLog(@"\n=== Advanced Low-End GPU Rendering Simulation ===");
-
-  // Original rendering parameters
-  NSUInteger originalVertexCount = vertexCount;
-  NSUInteger originalInstanceCount = instanceCount;
-
-  // Simulated rendering parameters
-  NSUInteger simulatedInstanceCount = instanceCount;
-  NSUInteger simulatedVertexCount = vertexCount;
-
-  // Calculate actual execution delay factor
-  float execution_delay_factor = 1.0;
-
-  float processing_capacity = sim->compute.processing_units_availability;
-  simulatedInstanceCount =
-      MAX(1, (NSUInteger)(originalInstanceCount * processing_capacity));
-
-  // Calculate how many passes we need to cover the original work
-  NSUInteger total_instance_passes =
-      ceil((float)originalInstanceCount / simulatedInstanceCount);
-
-  if (sim->compute.clock_speed_reduction > 0) {
-    execution_delay_factor *= (1.0 + sim->compute.clock_speed_reduction);
-    NSLog(@"Shader Clock Speed Reduced: %.2f%% (Delay Factor: %.2fx)",
-          sim->compute.clock_speed_reduction * 100, execution_delay_factor);
   }
-
-  if (sim->memory.bandwidth_reduction > 0) {
-    // Texture sampling is heavily affected by memory bandwidth
-    execution_delay_factor *= (1.0 + sim->memory.bandwidth_reduction * 2.0);
-    NSLog(@"Texture Bandwidth Reduced: %.2f%%",
-          sim->memory.bandwidth_reduction * 100);
+  if (!gpu->logging.log_file_path) {
+    return;
   }
-
-  if (sim->rendering.fillrate_reduction > 0) {
-    execution_delay_factor *= (1.0 + sim->rendering.fillrate_reduction);
-    NSLog(@"Fillrate Reduced: %.2f%%", sim->rendering.fillrate_reduction * 100);
+  FILE *f = fopen(gpu->logging.log_file_path, "w");
+  if (!f) {
+    fprintf(stderr,
+            "Warning: Could not initialize low-end GPU "
+            "log file %s\n",
+            gpu->logging.log_file_path);
+    return;
   }
-
-  if (sim->thermal.enable_thermal_simulation) {
-    // Base temperature + workload factor + randomness for realism
-    float workload_factor = (originalVertexCount * originalInstanceCount) /
-                            (100000.0); // Normalize to reasonable number
-
-    float simulated_temperature =
-        60.0 + (workload_factor * 20.0) + (rand() % 10);
-
-    if (simulated_temperature >= sim->thermal.thermal_throttling_threshold) {
-      float throttle_factor =
-          1.0 +
-          ((simulated_temperature - sim->thermal.thermal_throttling_threshold) /
-           10.0);
-
-      execution_delay_factor *= throttle_factor;
-
-      // In extreme thermal conditions, also reduce vertex detail
-      if (simulated_temperature >
-          sim->thermal.thermal_throttling_threshold + 15.0) {
-        // Reduce vertex count (simulating LOD reduction under thermal stress)
-        simulatedVertexCount =
-            MAX(4, (NSUInteger)(simulatedVertexCount * 0.75));
-        NSLog(@"Thermal Emergency: Vertex count reduced to %.0f%%",
-              ((float)simulatedVertexCount / originalVertexCount) * 100);
-      }
-
-      NSLog(@"Thermal Throttling Activated at %.1f°C (Throttle Factor: %.2fx)",
-            simulated_temperature, throttle_factor);
-    }
-  }
-
-  if (sim->logging.detailed_logging) {
-    FILE *log_file = fopen(sim->logging.log_file_path, "a");
-    if (log_file) {
-      fprintf(log_file, "Rendering Simulation Details:\n");
-      fprintf(log_file, "Original Instance Count: %lu\n",
-              (unsigned long)originalInstanceCount);
-      fprintf(log_file, "Original Vertex Count: %lu\n",
-              (unsigned long)originalVertexCount);
-      fprintf(log_file, "Simulated Instance Count: %lu\n",
-              (unsigned long)simulatedInstanceCount);
-      fprintf(log_file, "Simulated Vertex Count: %lu\n",
-              (unsigned long)simulatedVertexCount);
-      fprintf(log_file, "Total Instance Passes Required: %lu\n",
-              (unsigned long)total_instance_passes);
-      fprintf(log_file, "Execution Delay Factor: %.2fx\n",
-              execution_delay_factor);
-      fclose(log_file);
-    }
-  }
-
-  for (NSUInteger pass = 0; pass < total_instance_passes; pass++) {
-    NSUInteger instance_offset = pass * simulatedInstanceCount;
-    NSUInteger instances_this_pass =
-        MIN(simulatedInstanceCount, originalInstanceCount - instance_offset);
-
-    if (execution_delay_factor > 1.0) {
-      uint64_t delay_microseconds = (uint64_t)(1000 * execution_delay_factor);
-      usleep(delay_microseconds);
-    }
-
-    [encoder drawPrimitives:MTLPrimitiveTypeTriangle
-                vertexStart:0
-                vertexCount:simulatedVertexCount
-              instanceCount:instances_this_pass];
-  }
-
-  NSLog(@"Rendering Simulation Complete - Total Impact Factor: %.2fx slower",
-        execution_delay_factor * total_instance_passes);
+  time_t now = time(NULL);
+  struct tm *ti = localtime(&now);
+  char date_str[64];
+  strftime(date_str, sizeof(date_str), "%Y-%m-%d %H:%M:%S", ti);
+  fprintf(f,
+          "=== Low-End GPU Simulation Log "
+          "Started at %s ===\n",
+          date_str);
+  fprintf(f, "Simulation Settings:\n");
+  fprintf(f, "  Processing Units Availability: %.2f\n",
+          gpu->compute.processing_units_availability);
+  fprintf(f, "  Clock Speed Reduction:         %.2f\n",
+          gpu->compute.clock_speed_reduction);
+  fprintf(f, "  Compute Unit Failures:         %d\n",
+          gpu->compute.compute_unit_failures);
+  fprintf(f, "  Bandwidth Reduction:           %.2f\n",
+          gpu->memory.bandwidth_reduction);
+  fprintf(f, "  Latency Multiplier:            %.2f\n",
+          gpu->memory.latency_multiplier);
+  fprintf(f, "  Available Memory:              %llu bytes\n",
+          (unsigned long long)gpu->memory.available_memory);
+  fprintf(f, "  Memory Error Rate:             %.4f\n",
+          gpu->memory.memory_error_rate);
+  fprintf(f, "  Thermal Simulation Enabled:    %s\n",
+          gpu->thermal.enable_thermal_simulation ? "Yes" : "No");
+  fprintf(f, "\n");
+  fclose(f);
 }
 
 void track_async_command(AsyncCommandDebugExtension *ext,
@@ -1174,220 +1090,6 @@ void init_log_file(ProfilerConfig *config) {
               config->logging.log_file_path);
 }
 
-void image_to_buffer(NSString *imagePath, id<MTLBuffer> buffer, size_t width,
-                     size_t height) {
-  if (!buffer || !imagePath) {
-    NSLog(@"Error: Invalid buffer or image path");
-    return;
-  }
-
-  // Load the image
-  NSImage *image = [[NSImage alloc] initWithContentsOfFile:imagePath];
-  if (!image) {
-    NSLog(@"Error: Failed to load image from path: %@", imagePath);
-    return;
-  }
-
-  // Get image dimensions if width and height are not specified
-  if (width == 0 || height == 0) {
-    NSSize imageSize = [image size];
-    width = (size_t)imageSize.width;
-    height = (size_t)imageSize.height;
-  }
-
-  // Ensure buffer is large enough
-  size_t required_size = width * height * sizeof(float);
-  if (buffer.length < required_size) {
-    NSLog(@"Error: Buffer size (%lu) is too small for image data (%lux%lu = "
-          @"%lu bytes)",
-          (unsigned long)buffer.length, (unsigned long)width,
-          (unsigned long)height, (unsigned long)required_size);
-    [image release];
-    return;
-  }
-
-  // Create a bitmap representation of the image
-  NSBitmapImageRep *bitmap = nil;
-  NSArray *representations = [image representations];
-  for (NSImageRep *rep in representations) {
-    if ([rep isKindOfClass:[NSBitmapImageRep class]]) {
-      bitmap = (NSBitmapImageRep *)rep;
-      break;
-    }
-  }
-
-  // If no bitmap representation was found, create one
-  if (!bitmap) {
-    NSRect imageRect = NSMakeRect(0, 0, width, height);
-    NSImage *resizedImage = [[NSImage alloc] initWithSize:imageRect.size];
-    [resizedImage lockFocus];
-    [image drawInRect:imageRect
-             fromRect:NSZeroRect
-            operation:NSCompositingOperationCopy
-             fraction:1.0];
-    [resizedImage unlockFocus];
-
-    bitmap = [[NSBitmapImageRep alloc]
-        initWithData:[resizedImage TIFFRepresentation]];
-    [resizedImage release];
-  }
-
-  if (!bitmap) {
-    NSLog(@"Error: Failed to create bitmap representation of image");
-    [image release];
-    return;
-  }
-
-  // Resize bitmap if necessary
-  if ((size_t)[bitmap pixelsWide] != width ||
-      (size_t)[bitmap pixelsHigh] != height) {
-    NSBitmapImageRep *resizedBitmap =
-        [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
-                                                pixelsWide:width
-                                                pixelsHigh:height
-                                             bitsPerSample:8
-                                           samplesPerPixel:4
-                                                  hasAlpha:YES
-                                                  isPlanar:NO
-                                            colorSpaceName:NSDeviceRGBColorSpace
-                                               bytesPerRow:width * 4
-                                              bitsPerPixel:32];
-
-    [NSGraphicsContext saveGraphicsState];
-    NSGraphicsContext *context =
-        [NSGraphicsContext graphicsContextWithBitmapImageRep:resizedBitmap];
-    [NSGraphicsContext setCurrentContext:context];
-
-    [bitmap drawInRect:NSMakeRect(0, 0, width, height)];
-
-    [NSGraphicsContext restoreGraphicsState];
-    [bitmap release];
-    bitmap = resizedBitmap;
-  }
-
-  // Get buffer pointer
-  float *bufferData = (float *)[buffer contents];
-
-  // Convert image data to float values
-  for (size_t y = 0; y < height; y++) {
-    for (size_t x = 0; x < width; x++) {
-      NSUInteger pixel_index = y * width + x;
-      if (pixel_index >= buffer.length / sizeof(float)) {
-        continue; // Safety check to avoid buffer overflow
-      }
-
-      NSColor *color = [bitmap colorAtX:x y:y];
-      if (!color)
-        continue;
-
-      // Convert to grayscale using luminance formula
-      float grayscale = 0.299 * [color redComponent] +
-                        0.587 * [color greenComponent] +
-                        0.114 * [color blueComponent];
-
-      bufferData[pixel_index] = grayscale;
-    }
-  }
-
-  [bitmap release];
-  [image release];
-
-  NSLog(@"Image successfully converted to buffer data");
-}
-
-void initialize_image_buffers(id<MTLDevice> device, ProfilerConfig *config) {
-  if (!device || !config || !config->image_buffers) {
-    NSLog(@"Error: Invalid device or config for image buffer initialization");
-    return;
-  }
-
-  NSLog(@"Initializing %lu image buffers",
-        (unsigned long)[config->image_buffers count]);
-
-  for (NSValue *value in config->image_buffers) {
-    ImageBufferConfig *imageConfig = [value pointerValue];
-    if (!imageConfig || !imageConfig->image_path || !imageConfig->name) {
-      NSLog(@"Error: Invalid image buffer configuration");
-      continue;
-    }
-
-    NSString *imagePath =
-        [NSString stringWithUTF8String:imageConfig->image_path];
-    NSLog(@"Loading image from %@ for buffer '%s'", imagePath,
-          imageConfig->name);
-
-    // Load the image to get dimensions if not specified
-    NSImage *image = [[NSImage alloc] initWithContentsOfFile:imagePath];
-    if (!image) {
-      NSLog(@"Error: Failed to load image from path: %@", imagePath);
-      continue;
-    }
-
-    // Get image dimensions if width and height are not specified
-    size_t width = imageConfig->width;
-    size_t height = imageConfig->height;
-    if (width == 0 || height == 0) {
-      NSSize imageSize = [image size];
-      width = (size_t)imageSize.width;
-      height = (size_t)imageSize.height;
-      NSLog(@"Auto-detected image dimensions: %lux%lu", (unsigned long)width,
-            (unsigned long)height);
-    }
-    [image release];
-
-    // Determine buffer size based on type
-    size_t elementSize = 0;
-    if (strcmp(imageConfig->type, "float") == 0) {
-      elementSize = sizeof(float);
-    } else if (strcmp(imageConfig->type, "int") == 0) {
-      elementSize = sizeof(int);
-    } else if (strcmp(imageConfig->type, "uint") == 0) {
-      elementSize = sizeof(unsigned int);
-    } else if (strcmp(imageConfig->type, "half") == 0) {
-      elementSize = sizeof(short); // Metal half corresponds to 16-bit float
-    } else if (strcmp(imageConfig->type, "char") == 0) {
-      elementSize = sizeof(char);
-    } else if (strcmp(imageConfig->type, "uchar") == 0) {
-      elementSize = sizeof(unsigned char);
-    } else {
-      NSLog(@"Unsupported buffer type: %s, defaulting to float",
-            imageConfig->type);
-      elementSize = sizeof(float);
-    }
-
-    // Calculate buffer size based on image dimensions
-    size_t bufferSize = width * height * elementSize;
-    NSLog(@"Creating buffer of size %lu bytes for image data",
-          (unsigned long)bufferSize);
-
-    // Create a Metal buffer with the appropriate size
-    id<MTLBuffer> buffer =
-        [device newBufferWithLength:bufferSize
-                            options:MTLResourceStorageModeShared];
-    if (!buffer) {
-      NSLog(@"Error: Failed to create Metal buffer for image");
-      continue;
-    }
-
-    // Convert image to buffer data
-    image_to_buffer(imagePath, buffer, width, height);
-
-    // Create a buffer configuration and add it to the regular buffers array
-    BufferConfig *bufferConfig = malloc(sizeof(BufferConfig));
-    bufferConfig->name = strdup(imageConfig->name);
-    bufferConfig->size = bufferSize;
-    bufferConfig->type = strdup(imageConfig->type);
-    bufferConfig->contents = @[ buffer ];
-
-    [config->buffers addObject:[NSValue valueWithPointer:bufferConfig]];
-
-    NSLog(@"Successfully initialized image buffer '%s' (%lux%lu)",
-          imageConfig->name, (unsigned long)width, (unsigned long)height);
-  }
-
-  NSLog(@"Completed image buffer initialization");
-}
-
 ProfilerConfig *load_config(const char *config_path) {
   NSError *error = nil;
   NSData *jsonData = [NSData
@@ -1410,15 +1112,6 @@ ProfilerConfig *load_config(const char *config_path) {
   config->function_name = strdup([json[@"function_name"] UTF8String]);
   config->image_buffers = [[NSMutableArray alloc] init];
   config->buffers = [[NSMutableArray alloc] init];
-
-  // Parse pipeline type - default to compute if not specified
-  NSString *pipelineTypeStr = json[@"pipeline_type"];
-  if (pipelineTypeStr &&
-      [[pipelineTypeStr lowercaseString] isEqualToString:@"renderer"]) {
-    config->pipeline_type = PIPELINE_TYPE_RENDERER;
-  } else {
-    config->pipeline_type = PIPELINE_TYPE_COMPUTE; // Default
-  }
 
   NSDictionary *loggingConfig = json[@"logging"];
   if (loggingConfig) {
@@ -1448,6 +1141,7 @@ ProfilerConfig *load_config(const char *config_path) {
     config->debug.break_before_dispatch =
         [debugConfig[@"break_before_dispatch"] boolValue];
     config->debug.verbosity_level = [debugConfig[@"verbosity_level"] intValue];
+
     NSDictionary *timelineConfig = debugConfig[@"timeline"];
     if (timelineConfig) {
       config->debug.timeline.enabled = [timelineConfig[@"enabled"] boolValue];
@@ -1500,6 +1194,7 @@ ProfilerConfig *load_config(const char *config_path) {
 
     [config->buffers addObject:[NSValue valueWithPointer:bufferConfig]];
   }
+
   NSArray *imageBuffersConfig = json[@"image_buffers"];
   if (imageBuffersConfig) {
     for (NSDictionary *imageBufferInfo in imageBuffersConfig) {
@@ -1534,9 +1229,11 @@ ProfilerConfig *load_config(const char *config_path) {
     config->debug.breakpoint_count = 0;
     config->debug.breakpoints = NULL;
   }
+
   NSDictionary *lowEndGpuConfig = debugConfig[@"low_end_gpu"];
   if (lowEndGpuConfig) {
-    // Compute Simulation
+    config->debug.low_end_gpu.enabled = [lowEndGpuConfig[@"enabled"] boolValue];
+
     config->debug.low_end_gpu.compute.processing_units_availability =
         [lowEndGpuConfig[@"compute"][@"processing_units_availability"]
             floatValue];
@@ -1545,7 +1242,6 @@ ProfilerConfig *load_config(const char *config_path) {
     config->debug.low_end_gpu.compute.compute_unit_failures =
         [lowEndGpuConfig[@"compute"][@"compute_unit_failures"] intValue];
 
-    // Memory Simulation
     config->debug.low_end_gpu.memory.bandwidth_reduction =
         [lowEndGpuConfig[@"memory"][@"bandwidth_reduction"] floatValue];
     config->debug.low_end_gpu.memory.latency_multiplier =
@@ -1555,49 +1251,30 @@ ProfilerConfig *load_config(const char *config_path) {
     config->debug.low_end_gpu.memory.memory_error_rate =
         [lowEndGpuConfig[@"memory"][@"memory_error_rate"] floatValue];
 
-    // Thermal Simulation
-    config->debug.low_end_gpu.thermal.thermal_throttling_threshold =
-        [lowEndGpuConfig[@"thermal"][@"thermal_throttling_threshold"]
-            floatValue];
-    config->debug.low_end_gpu.thermal.power_limit =
-        [lowEndGpuConfig[@"thermal"][@"power_limit"] floatValue];
     config->debug.low_end_gpu.thermal.enable_thermal_simulation =
         [lowEndGpuConfig[@"thermal"][@"enable_thermal_simulation"] boolValue];
 
-    // Logging
     config->debug.low_end_gpu.logging.detailed_logging =
         [lowEndGpuConfig[@"logging"][@"detailed_logging"] boolValue];
-    NSString *logPath = lowEndGpuConfig[@"logging"][@"log_file_path"];
+    NSString *lowEndLogPath = lowEndGpuConfig[@"logging"][@"log_file_path"];
     config->debug.low_end_gpu.logging.log_file_path =
-        logPath ? strdup([logPath UTF8String]) : strdup("low_end_gpu_sim.log");
-
-    // Rendering Simulation
-    config->debug.low_end_gpu.rendering.fillrate_reduction =
-        [lowEndGpuConfig[@"rendering"][@"fillrate_reduction"] floatValue];
-    config->debug.low_end_gpu.rendering.texture_quality_reduction =
-        [lowEndGpuConfig[@"rendering"][@"texture_quality_reduction"]
-            floatValue];
-    config->debug.low_end_gpu.rendering.reduce_draw_distance =
-        [lowEndGpuConfig[@"rendering"][@"reduce_draw_distance"] boolValue];
-    config->debug.low_end_gpu.rendering.draw_distance_factor =
-        [lowEndGpuConfig[@"rendering"][@"draw_distance_factor"] floatValue];
+        lowEndLogPath ? strdup([lowEndLogPath UTF8String])
+                      : strdup("low_end_gpu_sim.log");
   } else {
-    // Default conservative settings
     config->debug.low_end_gpu.enabled = false;
     config->debug.low_end_gpu.compute.processing_units_availability = 0.7;
     config->debug.low_end_gpu.compute.clock_speed_reduction = 0.3;
     config->debug.low_end_gpu.compute.compute_unit_failures = 1;
     config->debug.low_end_gpu.memory.bandwidth_reduction = 0.5;
     config->debug.low_end_gpu.memory.latency_multiplier = 2.0;
+    config->debug.low_end_gpu.memory.available_memory = 0;
     config->debug.low_end_gpu.memory.memory_error_rate = 0.01;
-    config->debug.low_end_gpu.thermal.thermal_throttling_threshold = 90.0;
     config->debug.low_end_gpu.thermal.enable_thermal_simulation = true;
     config->debug.low_end_gpu.logging.detailed_logging = true;
-    config->debug.low_end_gpu.rendering.fillrate_reduction = 0.5;
-    config->debug.low_end_gpu.rendering.texture_quality_reduction = 0.5;
-    config->debug.low_end_gpu.rendering.reduce_draw_distance = true;
-    config->debug.low_end_gpu.rendering.draw_distance_factor = 0.5;
+    config->debug.low_end_gpu.logging.log_file_path =
+        strdup("low_end_gpu_sim.log");
   }
+
   NSDictionary *asyncConfig = debugConfig[@"async_debug"];
   if (asyncConfig) {
     config->debug.async_debug.config.enable_async_tracking =
