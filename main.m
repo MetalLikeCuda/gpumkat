@@ -16,7 +16,7 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 
-#define VERSION "v1.21"
+#define VERSION "v1.22"
 #define MAX_PATH_LEN 256
 
 // -------------------- Hot Reloading --------------------
@@ -352,28 +352,33 @@ int main(int argc, const char *argv[]) {
         if (comparison < 0) {
           printf("Update available. Latest: %s (Current: %s)\n", latest_version,
                  VERSION);
-
-          char update_command[256];
-          sprintf(
-              update_command,
-              "curl -L -o gpumkat.tar.gz "
-              "https://github.com/MetalLikeCuda/gpumkat/releases/download/%s/"
-              "gpumkat.tar.gz",
-              latest_version);
-
-          if (system(update_command) == 0 &&
-              system("tar -xvzf gpumkat.tar.gz") == 0) {
-            const char *path = "gpumkat";
-            if (chdir(path) != 0) {
-              perror("chdir() to 'gpumkat' failed");
+          char clone_command[512];
+          sprintf(clone_command,
+                  "git clone --depth 1 --branch %s "
+                  "https://github.com/MetalLikeCuda/gpumkat.git "
+                  "mCemm_update",
+                  latest_version);
+          if (system(clone_command) == 0) {
+            if (chdir("mCemm_update") != 0) {
+              perror("chdir() to 'mCemm_update' failed");
+              system("rm -rf mCemm_update");
+              free(latest_version);
               return 1;
             }
-            system("sudo sh install.sh");
-            printf("Update successful. Please restart the profiler.\n");
-            return 0;
+            if (system("sudo sh install.sh") == 0) {
+              printf("Update successful. Please restart gpumkat.\n");
+              chdir("..");
+              system("rm -rf mCemm_update");
+              free(latest_version);
+              return 0;
+            }
+            printf("Installation failed.\n");
+            chdir("..");
+            system("rm -rf mCemm_update");
+          } else {
+            printf("Clone failed. Check internet connection or "
+                   "repository access.\n");
           }
-          printf(
-              "Update failed. Please update manually from the repository.\n");
         } else {
           printf("Already running latest version (%s).\n", VERSION);
         }
