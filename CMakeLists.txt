@@ -4,7 +4,6 @@ project(gpumkat)
 set(CMAKE_C_FLAGS_RELEASE "-O2 -Wall -Wextra")
 set(CMAKE_BUILD_TYPE Release)
 
-# Library sources (everything except main)
 set(LIBRARY_SOURCES
     modules/plugin_manager/plugin_manager.m
     modules/debug/debug.m
@@ -18,50 +17,36 @@ set(LIBRARY_SOURCES
     modules/lsp_server/lsp_integration.m
 )
 
-# Executable sources
 set(EXECUTABLE_SOURCES
     main.m
 )
 
-# Create the shared library target
-add_library(gpumkat_lib SHARED ${LIBRARY_SOURCES})
-
-# Create the executable target
-add_executable(gpumkat ${EXECUTABLE_SOURCES})
-
-# Find required packages
 find_package(CURL REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(JSONC REQUIRED IMPORTED_TARGET json-c)
 
-# Add include directories for both targets
-target_include_directories(gpumkat_lib PRIVATE 
-    /opt/homebrew/Cellar/json-c/0.18/include
-)
-target_include_directories(gpumkat PRIVATE 
-    /opt/homebrew/Cellar/json-c/0.18/include
-)
-
-# Add library directories for both targets
-target_link_directories(gpumkat_lib PRIVATE 
-    /opt/homebrew/Cellar/json-c/0.18/lib
-)
-target_link_directories(gpumkat PRIVATE 
-    /opt/homebrew/Cellar/json-c/0.18/lib
+add_library(gpumkat_lib SHARED ${LIBRARY_SOURCES})
+set_target_properties(gpumkat_lib PROPERTIES
+    OUTPUT_NAME "gpumkat"
+    INSTALL_NAME_DIR "@rpath"
 )
 
-# Link libraries to the shared library
 target_link_libraries(gpumkat_lib PRIVATE
-    json-c
+    PkgConfig::JSONC
     CURL::libcurl
     "-framework Foundation"
     "-framework Metal"
     "-framework MetalPerformanceShaders"
     "-framework QuartzCore"
     "-framework AppKit"
+    "-ObjC"
 )
 
-# Link the executable to the shared library AND the frameworks it needs
+add_executable(gpumkat ${EXECUTABLE_SOURCES})
 target_link_libraries(gpumkat PRIVATE
     gpumkat_lib
+    PkgConfig::JSONC
+    CURL::libcurl
     "-framework Foundation"
     "-framework CoreGraphics"
     "-framework CoreImage"
@@ -69,8 +54,10 @@ target_link_libraries(gpumkat PRIVATE
     "-framework MetalPerformanceShaders"
     "-framework QuartzCore"
     "-framework AppKit"
+    "-ObjC"
 )
 
-set_target_properties(gpumkat_lib PROPERTIES
-    OUTPUT_NAME "gpumkat"
+set_target_properties(gpumkat PROPERTIES
+    BUILD_RPATH "${CMAKE_BINARY_DIR}"
+    INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib"
 )
