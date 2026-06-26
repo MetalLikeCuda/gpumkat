@@ -26,4 +26,3 @@ fi
 ln -s "$install_dir/lib/libgpumkat.dylib" "/usr/local/lib/libgpumkat.dylib"
 
 echo "Installation complete!"
-
