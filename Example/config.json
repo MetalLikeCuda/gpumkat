@@ -1,6 +1,6 @@
 {
     "metallib_path": "default.metallib",
-    "function_name": "compute_shader",
+    "function_name": "texture_invert",
     "logging": {
         "enabled": true,
         "log_file_path": "gpumkat_profiler.log",
@@ -11,14 +11,9 @@
         "enabled": true,
         "print_variables": true,
         "step_by_step": true,
-        "break_before_dispatch": true,
+        "break_before_dispatch": false,
         "verbosity_level": 2,
-        "breakpoints": [
-            {
-                "condition": "BeforeDispatch",
-                "description": "After buffer initialization"
-            }
-        ],
+        "breakpoints": [],
         "error_handling": {
             "catch_warnings": true,
             "catch_memory_errors": true,
@@ -29,7 +24,7 @@
             "min_severity": 1
         },
         "timeline": {
-            "enabled": true,
+            "enabled": false,
             "output_file": "gpumkat_timeline2.json",
             "track_buffers": true,
             "track_shaders": true,
@@ -37,7 +32,7 @@
             "max_events": 1000
         },
         "low_end_gpu": {
-            "enabled": true,
+            "enabled": false,
             "compute": {
                 "processing_units_availability": 0.6,
                 "clock_speed_reduction": 0.4,
@@ -60,35 +55,35 @@
             }
         },
         "async_debug": {
-            "enable_async_tracking": true,
-            "log_command_status": true,
-            "detect_long_running_commands": true,
+            "enable_async_tracking": false,
+            "log_command_status": false,
+            "detect_long_running_commands": false,
             "long_command_threshold": 2.5,
-            "generate_async_timeline": true
+            "generate_async_timeline": false
         },
         "thread_control": {
-            "enable_thread_debugging": true,
-            "dispatch_mode": 3,
-            "log_thread_execution": true,
-            "validate_thread_access": true,
-            "simulate_thread_failures": true,
-            "thread_failure_rate": 0.05,
+            "enable_thread_debugging": false,
+            "dispatch_mode": 0,
+            "log_thread_execution": false,
+            "validate_thread_access": false,
+            "simulate_thread_failures": false,
+            "thread_failure_rate": 0.0,
             "custom_thread_group_size": [
-                32,
-                1,
+                16,
+                16,
                 1
             ],
             "custom_grid_size": [
-                1024,
-                1,
+                512,
+                512,
                 1
             ],
-            "thread_order_file": "custom_thread_order.txt"
+            "thread_order_file": ""
         }
     },
     "buffers": [
         {
-            "name": "inputBuffer",
+            "name": "input_a",
             "size": 1024,
             "type": "float",
             "contents": [
@@ -100,7 +95,19 @@
             ]
         },
         {
-            "name": "outputBuffer",
+            "name": "input_b",
+            "size": 1024,
+            "type": "float",
+            "contents": [
+                2.0,
+                3.0,
+                4.0,
+                5.0,
+                6.0
+            ]
+        },
+        {
+            "name": "output",
             "size": 1024,
             "type": "float",
             "contents": []
@@ -109,10 +116,34 @@
     "image_buffers": [
         {
             "name": "inputImage",
-            "image_path": "/path/to/image.png",
+            "image_path": "image.png",
             "width": 0,
             "height": 0,
-            "type": "float"
+            "pixel_format": "RGBA8Unorm",
+            "mipmaps": false,
+            "texture_usage": [
+                "shader_read"
+            ],
+            "backend": "texture",
+            "bind": {
+                "as": "texture",
+                "index": 0
+            }
+        },
+        {
+            "name": "outputImage",
+            "width": 512,
+            "height": 512,
+            "pixel_format": "RGBA8Unorm",
+            "mipmaps": false,
+            "texture_usage": [
+                "shader_write"
+            ],
+            "backend": "texture",
+            "bind": {
+                "as": "texture",
+                "index": 1
+            }
         }
     ]
 }

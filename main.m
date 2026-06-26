@@ -16,7 +16,7 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 
-#define VERSION "v1.22"
+#define VERSION "v1.3"
 #define MAX_PATH_LEN 256
 
 // -------------------- Hot Reloading --------------------
@@ -153,109 +153,7 @@ void initialize_buffer(id<MTLBuffer> buffer, BufferConfig *config) {
   }
 }
 
-static id<MTLBuffer>
-create_compute_buffer_from_image(id<MTLDevice> device,
-                                 ImageBufferConfig *config,
-                                 ProfilerConfig *profilerConfig) {
-  if (!config || !config->image_path)
-    return nil;
-
-  NSString *path = [NSString stringWithUTF8String:config->image_path];
-  NSURL *url = [NSURL fileURLWithPath:path];
-
-  CGImageSourceRef source =
-      CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
-  if (!source) {
-    if (profilerConfig) {
-      record_error(&profilerConfig->debug, ERROR_SEVERITY_ERROR,
-                   ERROR_CATEGORY_BUFFER, "Cannot open image file",
-                   config->name);
-    }
-    return nil;
-  }
-
-  CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
-  CFRelease(source);
-  if (!image) {
-    if (profilerConfig) {
-      record_error(&profilerConfig->debug, ERROR_SEVERITY_ERROR,
-                   ERROR_CATEGORY_BUFFER, "Failed to decode image",
-                   config->name);
-    }
-    return nil;
-  }
-
-  size_t width = CGImageGetWidth(image);
-  size_t height = CGImageGetHeight(image);
-  size_t pixelCount = width * height;
-
-  // Allocate Metal buffer for float4 per pixel
-  size_t floatCount = pixelCount * 4;
-  size_t bufferSize = floatCount * sizeof(float);
-  id<MTLBuffer> buffer =
-      [device newBufferWithLength:bufferSize
-                          options:MTLResourceStorageModeShared];
-  if (!buffer) {
-    CGImageRelease(image);
-    if (profilerConfig) {
-      record_error(&profilerConfig->debug, ERROR_SEVERITY_ERROR,
-                   ERROR_CATEGORY_BUFFER, "Failed to allocate buffer",
-                   config->name);
-    }
-    return nil;
-  }
-
-  // Draw image into a temporary RGBA8 context, then convert to floats
-  size_t bytesPerRow = width * 4;
-  uint8_t *tempData = (uint8_t *)malloc(bytesPerRow * height);
-  if (!tempData) {
-    CGImageRelease(image);
-    return nil;
-  }
-
-  CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-  CGContextRef context = CGBitmapContextCreate(
-      tempData, width, height, 8, bytesPerRow, colorSpace,
-      kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
-  CGColorSpaceRelease(colorSpace);
-
-  if (!context) {
-    free(tempData);
-    CGImageRelease(image);
-    return nil;
-  }
-
-  CGRect rect = CGRectMake(0, 0, width, height);
-  CGContextDrawImage(context, rect, image);
-  CGContextRelease(context);
-  CGImageRelease(image);
-
-  // Convert RGBA8 → float4
-  float *floatData = (float *)buffer.contents;
-  for (size_t i = 0; i < pixelCount; i++) {
-    size_t byteIdx = i * 4;
-    floatData[i * 4 + 0] = (float)tempData[byteIdx + 0] / 255.0f; // R
-    floatData[i * 4 + 1] = (float)tempData[byteIdx + 1] / 255.0f; // G
-    floatData[i * 4 + 2] = (float)tempData[byteIdx + 2] / 255.0f; // B
-    floatData[i * 4 + 3] = (float)tempData[byteIdx + 3] / 255.0f; // A
-  }
-
-  free(tempData);
-
-  // Update config dimensions if they were unset
-  if (config->width == 0)
-    config->width = (uint32_t)width;
-  if (config->height == 0)
-    config->height = (uint32_t)height;
-
-  if (profilerConfig && profilerConfig->debug.enabled) {
-    log_message(profilerConfig, 2, "ImageBuffer",
-                "Loaded '%s' (%zux%zu) as %zu floats", config->name, width,
-                height, floatCount);
-  }
-
-  return buffer;
-}
+// create_compute_buffer_from_image is now in debug.m (shared helper)
 
 id<MTLBuffer> create_buffer_with_error_checking(id<MTLDevice> device,
                                                 BufferConfig *config,
@@ -535,12 +433,11 @@ int main(int argc, const char *argv[]) {
     Timer setupTimer = {get_time(), 0};
 
     ProfilerConfig *config = load_config(argv[1]);
-    init_log_file(config);
     if (!config) {
       NSLog(@"Failed to load configuration");
-      log_message(config, 0, "Config", "Failed to load configuration");
       return -1;
     }
+    init_log_file(config);
 
     // Print debug configuration if enabled
     if (config->debug.enabled) {
@@ -593,8 +490,8 @@ int main(int argc, const char *argv[]) {
     if (![[NSFileManager defaultManager]
             fileExistsAtPath:metallibFilePathString]) {
       NSLog(@"Metal library file does not exist: %@", metallibFilePathString);
-      log_message(config, 0, "Error", "Metal library file does not exist: %@",
-                  metallibFilePathString);
+      log_message(config, 0, "Error", "Metal library file does not exist: %s",
+                  [metallibFilePathString UTF8String]);
       return -1;
     }
 
@@ -698,38 +595,37 @@ int main(int argc, const char *argv[]) {
         print_buffer_state(buffer, bufferConfig->name,
                            bufferConfig->size * sizeof(float));
       }
+    }
 
-      // Find matching ImageBufferConfig for this buffer (if any)
-      ImageBufferConfig *imageConfig = nil;
-      for (NSValue *imgValue in config->image_buffers) {
-        ImageBufferConfig *tempImageConfig = [imgValue pointerValue];
-        if (strcmp(bufferConfig->name, tempImageConfig->name) == 0) {
-          imageConfig = tempImageConfig;
-          break;
-        }
-      }
-
-      // If this buffer corresponds to an image, create compute buffer with
-      // pixel data
-      if (imageConfig) {
-        // Skip Core Image filtering entirely — treat as compute buffer
-        id<MTLBuffer> imageComputeBuffer = buffer =
-            create_compute_buffer_from_image(device, imageConfig, config);
-        if (imageComputeBuffer) {
-          metalBuffers[@(bufferConfig->name)] = imageComputeBuffer;
-          track_allocation(imageComputeBuffer, imageComputeBuffer.length,
-                           bufferConfig->name);
-
+    // Process image_buffers — create textures or compute buffers
+    for (NSValue *imgVal in config->image_buffers) {
+      ImageBufferConfig *ic = [imgVal pointerValue];
+      if (ic->backend == 0) { // IMAGE_BACKEND_TEXTURE
+        id<MTLTexture> tex = create_texture_from_image(device, ic, config);
+        if (tex) {
+          config->metal_textures[@(ic->name)] = tex;
           if (config->debug.enabled && config->debug.print_variables) {
-            print_buffer_state(imageComputeBuffer, bufferConfig->name,
-                               imageComputeBuffer.length);
+            print_texture_state(tex, ic->name);
           }
         } else {
-          record_error(
-              &config->debug, ERROR_SEVERITY_ERROR, ERROR_CATEGORY_BUFFER,
-              "Failed to load image into compute buffer", bufferConfig->name);
+          record_error(&config->debug, ERROR_SEVERITY_ERROR,
+                       ERROR_CATEGORY_BUFFER,
+                       "Failed to create texture from image", ic->name);
         }
-        continue; // Skip normal buffer creation for this config entry
+      } else { // IMAGE_BACKEND_BUFFER (legacy)
+        id<MTLBuffer> buf =
+            create_compute_buffer_from_image(device, ic, config);
+        if (buf) {
+          metalBuffers[@(ic->name)] = buf;
+          track_allocation(buf, buf.length, ic->name);
+          if (config->debug.enabled && config->debug.print_variables) {
+            print_buffer_state(buf, ic->name, buf.length);
+          }
+        } else {
+          record_error(&config->debug, ERROR_SEVERITY_ERROR,
+                       ERROR_CATEGORY_BUFFER,
+                       "Failed to load image into compute buffer", ic->name);
+        }
       }
     }
 
@@ -818,8 +714,59 @@ int main(int argc, const char *argv[]) {
       bufferIndex++;
     }
 
-    // Configure and dispatch threads with debug info
+    // Set textures with debug info
+    for (NSValue *imgVal in config->image_buffers) {
+      ImageBufferConfig *ic = [imgVal pointerValue];
+      if (ic->backend == 0 &&
+          ic->bind_as == 0) { // TEXTURE backend, BIND_AS_TEXTURE
+        id<MTLTexture> tex = config->metal_textures[@(ic->name)];
+        if (tex) {
+          [encoder setTexture:tex atIndex:ic->bind_index];
+          if (config->debug.enabled && config->debug.verbosity_level >= 2) {
+            NSLog(@"Set texture '%s' at index %lu", ic->name,
+                  (unsigned long)ic->bind_index);
+            log_message(config, 2, "Debug", "Set texture '%s' at index %lu",
+                        ic->name, (unsigned long)ic->bind_index);
+          }
+          capture_command_buffer_state(&config->debug, commandBuffer, ic->name);
+        } else {
+          record_error(&config->debug, ERROR_SEVERITY_ERROR,
+                       ERROR_CATEGORY_BUFFER, "Texture not found for binding",
+                       ic->name);
+        }
+      } else if (ic->backend == 1 ||
+                 ic->bind_as == 1) { // BUFFER backend or BIND_AS_BUFFER
+        id<MTLBuffer> buf = metalBuffers[@(ic->name)];
+        if (buf) {
+          [encoder setBuffer:buf offset:0 atIndex:ic->bind_index];
+          if (config->debug.enabled && config->debug.verbosity_level >= 2) {
+            NSLog(@"Set image buffer '%s' at index %lu", ic->name,
+                  (unsigned long)ic->bind_index);
+            log_message(config, 2, "Debug",
+                        "Set image buffer '%s' at index %lu", ic->name,
+                        (unsigned long)ic->bind_index);
+          }
+          capture_command_buffer_state(&config->debug, commandBuffer, ic->name);
+        } else {
+          record_error(&config->debug, ERROR_SEVERITY_ERROR,
+                       ERROR_CATEGORY_BUFFER,
+                       "Image buffer not found for binding", ic->name);
+        }
+      }
+    }
+
+    // Derive grid from first texture if present, else default 1024x1x1
     MTLSize gridSize = MTLSizeMake(1024, 1, 1);
+    for (NSValue *imgVal in config->image_buffers) {
+      ImageBufferConfig *ic = [imgVal pointerValue];
+      if (ic->backend == 0) {
+        id<MTLTexture> tex = config->metal_textures[@(ic->name)];
+        if (tex) {
+          gridSize = MTLSizeMake(tex.width, tex.height, 1);
+          break;
+        }
+      }
+    }
     MTLSize threadGroupSize = MTLSizeMake(32, 1, 1);
 
     if (config->debug.enabled && config->debug.verbosity_level >= 1) {
@@ -840,6 +787,10 @@ int main(int argc, const char *argv[]) {
                       NSString *key, id<MTLBuffer> buffer, BOOL *stop) {
       generate_all_buffer_visualizations(buffer, [key UTF8String], true);
     }];
+    [config->metal_textures enumerateKeysAndObjectsUsingBlock:^(
+                                NSString *key, id<MTLTexture> tex, BOOL *stop) {
+      generate_all_texture_visualizations(tex, [key UTF8String], true);
+    }];
 
     if (config->debug.enabled && config->debug.break_before_dispatch) {
       debug_pause("About to dispatch compute kernel");
@@ -858,9 +809,6 @@ int main(int argc, const char *argv[]) {
       configure_thread_execution(encoder, &config->debug, &gridSize,
                                  &threadGroupSize);
     }
-
-    configure_thread_execution(encoder, &config->debug, &gridSize,
-                               &threadGroupSize);
     [encoder endEncoding];
 
     if (config->debug.async_debug.config.enable_async_tracking) {
@@ -973,6 +921,10 @@ int main(int argc, const char *argv[]) {
                       NSString *key, id<MTLBuffer> buffer, BOOL *stop) {
       generate_all_buffer_visualizations(buffer, [key UTF8String], false);
     }];
+    [config->metal_textures enumerateKeysAndObjectsUsingBlock:^(
+                                NSString *key, id<MTLTexture> tex, BOOL *stop) {
+      generate_all_texture_visualizations(tex, [key UTF8String], false);
+    }];
 
     add_event_marker("Cleanup", "Beginning resource cleanup");
 
@@ -981,6 +933,7 @@ int main(int argc, const char *argv[]) {
       untrack_allocation(buffer);
       free_tracked_buffer(buffer);
     }];
+    [config->metal_textures removeAllObjects];
 
     save_timeline(&config->debug);
     cleanup_timeline(&config->debug);
@@ -1020,7 +973,18 @@ int main(int argc, const char *argv[]) {
     log_message(config, 2, "Debug", "Total execution time: %.6f seconds",
                 totalTime);
 
+    for (NSValue *value in config->image_buffers) {
+      ImageBufferConfig *ic = [value pointerValue];
+      free((void *)ic->name);
+      free((void *)ic->image_path);
+      free((void *)ic->type);
+      free(ic);
+    }
+    [config->image_buffers release];
+    [config->metal_textures release];
+
     // free AFTER logging
+    close_log_file();
     free((void *)config->metallib_path);
     free((void *)config->function_name);
     [config->buffers release];

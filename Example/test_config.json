@@ -1,7 +1,7 @@
 {
     "name": "GPU Kernel Test Suite",
     "description": "Comprehensive test suite for GPU compute kernels",
-    "metallib_path": "test.metallib",
+    "metallib_path": "default.metallib",
     "stop_on_failure": false,
     "verbose_output": true,
     "generate_report": true,
@@ -265,6 +265,39 @@
                     "index": 1,
                     "expected": 0.04,
                     "tolerance": 0.0001
+                }
+            ]
+        },
+        {
+            "name": "texture_invert_basic",
+            "description": "Test texture_invert kernel with image input and texture output",
+            "shader_function": "texture_invert",
+            "skip": false,
+            "timeout_ms": 10000,
+            "max_execution_time_ms": 1000,
+            "max_memory_usage_mb": 200,
+            "input_buffers": [
+                {
+                    "name": "inputImage",
+                    "image_path": "image.png",
+                    "backend": "texture",
+                    "pixel_format": "RGBA8Unorm",
+                    "bind_index": 0
+                },
+                {
+                    "name": "outputImage",
+                    "size": 512,
+                    "data": [],
+                    "backend": "texture",
+                    "pixel_format": "RGBA8Unorm",
+                    "bind_index": 1
+                }
+            ],
+            "assertions": [
+                {
+                    "type": "performance_lt",
+                    "description": "Texture invert should complete within 500ms",
+                    "threshold_ms": 500.0
                 }
             ]
         }

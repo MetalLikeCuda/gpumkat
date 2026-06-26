@@ -1,5 +1,6 @@
 #include <Metal/Metal.h>
 #include <mach/mach_time.h>
+#include "../debug/expose_from_debug.h"
 
 typedef struct {
   size_t totalAllocated;
@@ -11,7 +12,7 @@ static MemoryTracker memoryTracker = {0, 0};
 id<MTLBuffer> create_tracked_buffer(id<MTLDevice> device, size_t size,
                                     MTLResourceOptions options) {
   memoryTracker.totalAllocated += size;
-  NSLog(@"Buffer allocated: %zu bytes (Total: %zu bytes)", size,
+  log_printf(2, "Memory", "Buffer allocated: %zu bytes (Total: %zu bytes)", size,
         memoryTracker.totalAllocated);
   return [device newBufferWithLength:size options:options];
 }
@@ -19,7 +20,7 @@ id<MTLBuffer> create_tracked_buffer(id<MTLDevice> device, size_t size,
 void free_tracked_buffer(id<MTLBuffer> buffer) {
   size_t size = buffer.length;
   memoryTracker.totalFreed += size;
-  NSLog(@"Buffer freed: %zu bytes (Total freed: %zu bytes)", size,
+  log_printf(2, "Memory", "Buffer freed: %zu bytes (Total freed: %zu bytes)", size,
         memoryTracker.totalFreed);
 }
 
