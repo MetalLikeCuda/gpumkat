@@ -224,6 +224,7 @@ int run_test_suite(TestSuite *suite, const char *metallib_path) {
   }
 
   context.metal_buffers = [[NSMutableDictionary alloc] init];
+  context.metal_textures = [[NSMutableDictionary alloc] init];
   context.test_errors = [[NSMutableArray alloc] init];
   context.initial_memory_usage = get_memory_usage_mb();
 
@@ -307,116 +308,47 @@ int run_test_suite(TestSuite *suite, const char *metallib_path) {
   return (suite->failed_tests > 0 || suite->error_tests > 0) ? 1 : 0;
 }
 
-static id<MTLBuffer>
-create_compute_buffer_from_image(id<MTLDevice> device,
-                                 ImageBufferConfig *config,
-                                 ProfilerConfig *profilerConfig) {
-  if (!config || !config->image_path)
-    return nil;
-
-  NSString *path = [NSString stringWithUTF8String:config->image_path];
-  NSURL *url = [NSURL fileURLWithPath:path];
-
-  CGImageSourceRef source =
-      CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
-  if (!source) {
-    if (profilerConfig) {
-      record_error(&profilerConfig->debug, ERROR_SEVERITY_ERROR,
-                   ERROR_CATEGORY_BUFFER, "Cannot open image file",
-                   config->name);
-    }
-    return nil;
-  }
-
-  CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
-  CFRelease(source);
-  if (!image) {
-    if (profilerConfig) {
-      record_error(&profilerConfig->debug, ERROR_SEVERITY_ERROR,
-                   ERROR_CATEGORY_BUFFER, "Failed to decode image",
-                   config->name);
-    }
-    return nil;
-  }
-
-  size_t width = CGImageGetWidth(image);
-  size_t height = CGImageGetHeight(image);
-  size_t pixelCount = width * height;
-  size_t floatCount = pixelCount * 4;
-  size_t bufferSize = floatCount * sizeof(float);
-
-  id<MTLBuffer> buffer =
-      [device newBufferWithLength:bufferSize
-                          options:MTLResourceStorageModeShared];
-  if (!buffer) {
-    CGImageRelease(image);
-    if (profilerConfig) {
-      record_error(&profilerConfig->debug, ERROR_SEVERITY_ERROR,
-                   ERROR_CATEGORY_BUFFER, "Failed to allocate buffer",
-                   config->name);
-    }
-    return nil;
-  }
-
-  size_t bytesPerRow = width * 4;
-  uint8_t *tempData = (uint8_t *)malloc(bytesPerRow * height);
-  if (!tempData) {
-    CGImageRelease(image);
-    return nil;
-  }
-
-  CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-  CGContextRef ctx = CGBitmapContextCreate(
-      tempData, width, height, 8, bytesPerRow, colorSpace,
-      kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
-  CGColorSpaceRelease(colorSpace);
-
-  if (!ctx) {
-    free(tempData);
-    CGImageRelease(image);
-    return nil;
-  }
-
-  CGContextDrawImage(ctx, CGRectMake(0, 0, width, height), image);
-  CGContextRelease(ctx);
-  CGImageRelease(image);
-
-  float *floatData = (float *)buffer.contents;
-  for (size_t i = 0; i < pixelCount; i++) {
-    size_t byteIdx = i * 4;
-    floatData[i * 4 + 0] = (float)tempData[byteIdx + 0] / 255.0f; // R
-    floatData[i * 4 + 1] = (float)tempData[byteIdx + 1] / 255.0f; // G
-    floatData[i * 4 + 2] = (float)tempData[byteIdx + 2] / 255.0f; // B
-    floatData[i * 4 + 3] = (float)tempData[byteIdx + 3] / 255.0f; // A
-  }
-
-  free(tempData);
-
-  if (config->width == 0)
-    config->width = (uint32_t)width;
-  if (config->height == 0)
-    config->height = (uint32_t)height;
-
-  if (profilerConfig && profilerConfig->debug.enabled) {
-    log_message(profilerConfig, 2, "ImageBuffer",
-                "Loaded '%s' (%zux%zu) as %zu floats", config->name, width,
-                height, floatCount);
-  }
-
-  return buffer;
-}
-
 int run_single_test(TestCase *test_case, TestContext *context) {
   test_case->test_start_time = get_time_ns();
   size_t initial_memory = get_memory_usage_mb();
   NSError *error = nil;
 
   [context->metal_buffers removeAllObjects];
+  [context->metal_textures removeAllObjects];
   for (NSDictionary *bufferDict in test_case->buffers) {
     NSString *bufferName = [bufferDict objectForKey:@"name"];
     NSString *imagePath = [bufferDict objectForKey:@"image_path"];
+    NSString *backendStr = [bufferDict objectForKey:@"backend"];
 
-    if (imagePath) {
+    if ([backendStr isEqualToString:@"texture"]) {
+      // Texture backend — create a Metal texture
+      ImageBufferConfig imgCfg = {0};
+      imgCfg.name = [bufferName UTF8String];
+      if (imagePath) {
+        imgCfg.image_path = [imagePath UTF8String];
+      } else {
+        imgCfg.width = [[bufferDict objectForKey:@"size"] unsignedIntegerValue];
+        imgCfg.height = imgCfg.width; // square default
+        imgCfg.image_path = NULL;
+      }
+      NSString *pfStr = [bufferDict objectForKey:@"pixel_format"];
+      imgCfg.pixel_format = pfStr ? pixel_format_from_string([pfStr UTF8String])
+                                  : MTLPixelFormatRGBA8Unorm;
+      // Input textures get ShaderRead; output textures (no image_path) get
+      // ShaderWrite
+      imgCfg.texture_usage =
+          imagePath ? MTLTextureUsageShaderRead : MTLTextureUsageShaderWrite;
+      imgCfg.backend = 0; // IMAGE_BACKEND_TEXTURE
+      id<MTLTexture> tex =
+          create_texture_from_image(context->device, &imgCfg, NULL);
+      if (!tex) {
+        record_test_result(test_case, TEST_STATUS_ERROR,
+                           "Failed to create texture from image");
+        return -1;
+      }
+      context->metal_textures[bufferName] = tex;
+    } else if (imagePath) {
+      // Legacy compute-buffer backend
       ImageBufferConfig imgCfg = {0};
       imgCfg.image_path = [imagePath UTF8String];
       imgCfg.name = [bufferName UTF8String];
@@ -481,7 +413,50 @@ int run_single_test(TestCase *test_case, TestContext *context) {
     [encoder setBuffer:buffer offset:0 atIndex:bufferIndex++];
   }
 
+  [context->metal_textures enumerateKeysAndObjectsUsingBlock:^(
+                               NSString *key, id<MTLTexture> tex, BOOL *stop) {
+    // Look up bind_index from original buffer dict
+    __block bool hasExplicitIndex = false;
+    __block NSUInteger texIdx = 0;
+    for (NSDictionary *bd in test_case->buffers) {
+      if ([[bd objectForKey:@"name"] isEqualToString:key]) {
+        NSNumber *idxNum = [bd objectForKey:@"bind_index"];
+        if (idxNum) {
+          texIdx = [idxNum unsignedIntegerValue];
+          hasExplicitIndex = true;
+        }
+        break;
+      }
+    }
+    if (!hasExplicitIndex) {
+      // No explicit bind_index: use sequential texture position
+      texIdx = 0;
+      for (NSDictionary *bd in test_case->buffers) {
+        NSString *bdBackend = [bd objectForKey:@"backend"];
+        if ([bdBackend isEqualToString:@"texture"]) {
+          if ([[bd objectForKey:@"name"] isEqualToString:key])
+            break;
+          texIdx++;
+        }
+      }
+    }
+    [encoder setTexture:tex atIndex:texIdx];
+  }];
+
+  // Derive grid from the first input texture (has image_path), else default
+  // 1024×1×1
   MTLSize gridSize = MTLSizeMake(1024, 1, 1);
+  for (NSDictionary *bd in test_case->buffers) {
+    NSString *bdBackend = [bd objectForKey:@"backend"];
+    NSString *bdImagePath = [bd objectForKey:@"image_path"];
+    if ([bdBackend isEqualToString:@"texture"] && bdImagePath) {
+      id<MTLTexture> tex = context->metal_textures[[bd objectForKey:@"name"]];
+      if (tex) {
+        gridSize = MTLSizeMake(tex.width, tex.height, 1);
+        break;
+      }
+    }
+  }
   MTLSize threadGroupSize = MTLSizeMake(32, 1, 1);
   [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadGroupSize];
   [encoder endEncoding];
@@ -759,6 +734,7 @@ void print_assertion_failure(TestAssertion *assertion, const char *test_name) {
 
 void cleanup_test_context(TestContext *context) {
   [context->metal_buffers release];
+  [context->metal_textures release];
   [context->test_errors release];
 }
 

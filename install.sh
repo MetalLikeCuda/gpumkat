@@ -1,6 +1,6 @@
 #!/bin/bash
 
-GPUMKAT_VERSION="1.22"
+GPUMKAT_VERSION="1.3"
 
 if [ "$EUID" -ne 0 ]; then
   echo "Please run as root or use sudo"

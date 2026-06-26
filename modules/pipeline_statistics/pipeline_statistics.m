@@ -1,3 +1,4 @@
+#include "../debug/expose_from_debug.h"
 #include <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
@@ -212,25 +213,26 @@ GPUSwState simulate_gpu_sw_states(double gpuTime, double gpuUtilization,
 }
 
 void print_gpu_sw_states(GPUSwState state) {
-  NSLog(@"=== GPU Software States ===");
-  NSLog(@"Power State: %s", state.powerState);
+  log_printf(2, "Pipeline", "=== GPU Software States ===");
+  log_printf(2, "Pipeline", "Power State: %s", state.powerState);
 
-  NSLog(@"Temperature Range: %.1f°C - %.1f°C", state.temperatureMinC,
-        state.temperatureMaxC);
+  log_printf(2, "Pipeline", "Temperature Range: %.1f°C - %.1f°C",
+             state.temperatureMinC, state.temperatureMaxC);
 
-  NSLog(@"Fan Speed Range: %.1f%% - %.1f%%", state.fanMinPercent,
-        state.fanMaxPercent);
+  log_printf(2, "Pipeline", "Fan Speed Range: %.1f%% - %.1f%%",
+             state.fanMinPercent, state.fanMaxPercent);
 
-  NSLog(@"Clock Gating Range: %.1f%% - %.1f%%", state.clockGatingMin,
-        state.clockGatingMax);
+  log_printf(2, "Pipeline", "Clock Gating Range: %.1f%% - %.1f%%",
+             state.clockGatingMin, state.clockGatingMax);
 
-  NSLog(@"Power Gating Range: %.1f%% - %.1f%%", state.powerGatingMin,
-        state.powerGatingMax);
+  log_printf(2, "Pipeline", "Power Gating Range: %.1f%% - %.1f%%",
+             state.powerGatingMin, state.powerGatingMax);
 
-  NSLog(@"Active Contexts: %u", state.activeContexts);
-  NSLog(@"Queued Commands: %u", state.queuedCommands);
-  NSLog(@"Memory Controller Load: %.1f%%", state.memoryControllerLoad * 100.0);
-  NSLog(@"Active Shader Cores: %u", state.activeShaderCores);
+  log_printf(2, "Pipeline", "Active Contexts: %u", state.activeContexts);
+  log_printf(2, "Pipeline", "Queued Commands: %u", state.queuedCommands);
+  log_printf(2, "Pipeline", "Memory Controller Load: %.1f%%",
+             state.memoryControllerLoad * 100.0);
+  log_printf(2, "Pipeline", "Active Shader Cores: %u", state.activeShaderCores);
 }
 
 PipelineStats
@@ -470,100 +472,121 @@ collect_pipeline_statistics(id<MTLCommandBuffer> commandBuffer,
              fmax(BASE_FREQUENCY_GHZ, estimatedFrequency * thermalFactor));
 
     // Print comprehensive statistics
-    NSLog(@"=== Pipeline Statistics ===");
-    NSLog(@"Performance Metrics:");
-    NSLog(@"Realistic Frames: %.2f", stats.currentFPS);
-    NSLog(@"Actual Frames: %.2f", stats.actualFPS);
+    log_printf(2, "Pipeline", "=== Pipeline Statistics ===");
+    log_printf(2, "Pipeline", "Performance Metrics:");
+    log_printf(2, "Pipeline", "Realistic Frames: %.2f", stats.currentFPS);
+    log_printf(2, "Pipeline", "Actual Frames: %.2f", stats.actualFPS);
 
-    NSLog(@"==GPU Metrics:==");
-    NSLog(@"GPU Time: %.3f ms", stats.gpuTime * 1000.0);
-    NSLog(@"GPU Frequency: %.2f GHz", finalFrequency);
-    NSLog(@"GPU Utilization: %.2f%%", gpuUtilization * 100.0);
+    log_printf(2, "Pipeline", "==GPU Metrics:==");
+    log_printf(2, "Pipeline", "GPU Time: %.3f ms", stats.gpuTime * 1000.0);
+    log_printf(2, "Pipeline", "GPU Frequency: %.2f GHz", finalFrequency);
+    log_printf(2, "Pipeline", "GPU Utilization: %.2f%%",
+               gpuUtilization * 100.0);
 
-    NSLog(@"==Kernel Metrics:==");
-    NSLog(@"Kernel Occupancy: %.2f%%", stats.kernelOccupancy * 100.0);
-    NSLog(@"Active Warps: %llu", stats.activeWarps);
-    NSLog(@"Max Warps: %llu", stats.maxWarps);
-    NSLog(@"Thread Block Size: %llu", stats.threadBlockSize);
-    NSLog(@"Grid Size: %llu", stats.gridSize);
-    NSLog(@"Thread Execution Width: %lu",
-          (unsigned long)stats.threadExecutionWidth);
-    NSLog(@"Shader Invocation Count: %lu",
-          (unsigned long)stats.shaderInvocationCount);
-    NSLog(@"Threadgroup Occupancy: %.2f%%", stats.threadgroupOccupancy * 100.0);
-    NSLog(@"Thread Divergence: %.2f%%", threadDivergence * 100.0);
-    NSLog(@"Kernel Performance: %s", kernel_performance);
-    NSLog(@"Total Threads: %llu", totalThreads);
+    log_printf(2, "Pipeline", "==Kernel Metrics:==");
+    log_printf(2, "Pipeline", "Kernel Occupancy: %.2f%%",
+               stats.kernelOccupancy * 100.0);
+    log_printf(2, "Pipeline", "Active Warps: %llu", stats.activeWarps);
+    log_printf(2, "Pipeline", "Max Warps: %llu", stats.maxWarps);
+    log_printf(2, "Pipeline", "Thread Block Size: %llu", stats.threadBlockSize);
+    log_printf(2, "Pipeline", "Grid Size: %llu", stats.gridSize);
+    log_printf(2, "Pipeline", "Thread Execution Width: %lu",
+               (unsigned long)stats.threadExecutionWidth);
+    log_printf(2, "Pipeline", "Shader Invocation Count: %lu",
+               (unsigned long)stats.shaderInvocationCount);
+    log_printf(2, "Pipeline", "Threadgroup Occupancy: %.2f%%",
+               stats.threadgroupOccupancy * 100.0);
+    log_printf(2, "Pipeline", "Thread Divergence: %.2f%%",
+               threadDivergence * 100.0);
+    log_printf(2, "Pipeline", "Kernel Performance: %s", kernel_performance);
+    log_printf(2, "Pipeline", "Total Threads: %llu", totalThreads);
 
-    NSLog(@"==Shader Metrics:==");
-    NSLog(@"Shader Complexity: %s", shaderComplexity);
-    NSLog(@"Instructions per Thread: %.2f", instructionsPerThread);
-    NSLog(@"Arithmetic Intensity: %.20Le ops/mem access", arithmeticIntensity);
-    NSLog(@"Compute Intensity: %.2f", shaderMetrics.computeIntensity);
-    NSLog(@"Memory Pressure: %.2f%%", shaderMetrics.memoryPressure * 100.0);
-    NSLog(@"Branch Divergence: %.2f%%", shaderMetrics.branchDivergence * 100.0);
-    NSLog(@"Register Pressure: %.2f%%", shaderMetrics.registerPressure * 100.0);
-    NSLog(@"SIMD Utilization: %.2f%%", simdUtilization * 100.0);
-    NSLog(@"Overall Shader Efficiency: %.2f%%", shaderEfficiency * 100.0);
+    log_printf(2, "Pipeline", "==Shader Metrics:==");
+    log_printf(2, "Pipeline", "Shader Complexity: %s", shaderComplexity);
+    log_printf(2, "Pipeline", "Instructions per Thread: %.2f",
+               instructionsPerThread);
+    log_printf(2, "Pipeline", "Arithmetic Intensity: %.20Le ops/mem access",
+               arithmeticIntensity);
+    log_printf(2, "Pipeline", "Compute Intensity: %.2f",
+               shaderMetrics.computeIntensity);
+    log_printf(2, "Pipeline", "Memory Pressure: %.2f%%",
+               shaderMetrics.memoryPressure * 100.0);
+    log_printf(2, "Pipeline", "Branch Divergence: %.2f%%",
+               shaderMetrics.branchDivergence * 100.0);
+    log_printf(2, "Pipeline", "Register Pressure: %.2f%%",
+               shaderMetrics.registerPressure * 100.0);
+    log_printf(2, "Pipeline", "SIMD Utilization: %.2f%%",
+               simdUtilization * 100.0);
+    log_printf(2, "Pipeline", "Overall Shader Efficiency: %.2f%%",
+               shaderEfficiency * 100.0);
 
-    NSLog(@"==CPU Metrics:==");
-    NSLog(@"CPU Usage: %.2f%%", stats.cpuUsage);
-    NSLog(@"Program Memory Usage: %.2f MB", stats.usedMemory / 1e6);
+    log_printf(2, "Pipeline", "==CPU Metrics:==");
+    log_printf(2, "Pipeline", "CPU Usage: %.2f%%", stats.cpuUsage);
+    log_printf(2, "Pipeline", "Program Memory Usage: %.2f MB",
+               stats.usedMemory / 1e6);
 
-    NSLog(@"==Interface Metrics:==");
-    NSLog(@"GPU-CPU Transfer Time: %.3f ms",
-          stats.gpuToCpuTransferTime * 1000.0);
-    NSLog(@"GPU-CPU Transfer Efficiency: %.2f%%",
-          gpuToCpuTransferEfficiency * 100.0);
-    NSLog(@"Approximate Bandwidth: %.2f GB/s", stats.gpuToCpuBandwidth / 1e9);
+    log_printf(2, "Pipeline", "==Interface Metrics:==");
+    log_printf(2, "Pipeline", "GPU-CPU Transfer Time: %.3f ms",
+               stats.gpuToCpuTransferTime * 1000.0);
+    log_printf(2, "Pipeline", "GPU-CPU Transfer Efficiency: %.2f%%",
+               gpuToCpuTransferEfficiency * 100.0);
+    log_printf(2, "Pipeline", "Approximate Bandwidth: %.2f GB/s",
+               stats.gpuToCpuBandwidth / 1e9);
 
     GPUSwState swState = simulate_gpu_sw_states(stats.gpuTime, gpuUtilization,
                                                 activeWarps, totalThreads, 0.0);
     print_gpu_sw_states(swState);
 
-    NSLog(@"==Cache Metrics:==");
-    NSLog(@"Cache Hits: %llu", cacheHits);
-    NSLog(@"Cache Misses: %llu", cacheMisses);
-    NSLog(@"Total accesses: %llu", totalAccesses);
-    NSLog(@"==Shader Optimization Recommendations:==");
+    log_printf(2, "Pipeline", "==Cache Metrics:==");
+    log_printf(2, "Pipeline", "Cache Hits: %llu", cacheHits);
+    log_printf(2, "Pipeline", "Cache Misses: %llu", cacheMisses);
+    log_printf(2, "Pipeline", "Total accesses: %llu", totalAccesses);
+    log_printf(2, "Pipeline", "==Shader Optimization Recommendations:==");
     if (shaderMetrics.memoryPressure > 0.6) {
-      NSLog(@"- Consider optimizing memory access patterns");
-      NSLog(@"- Evaluate potential for memory coalescing");
+      log_printf(2, "Pipeline", "- Consider optimizing memory access patterns");
+      log_printf(2, "Pipeline", "- Evaluate potential for memory coalescing");
     }
     if (shaderMetrics.branchDivergence > 0.5) {
-      NSLog(@"- High branch divergence detected. Consider reorganizing "
-            @"conditional logic");
-      NSLog(@"- Evaluate potential for predication instead of branching");
+      log_printf(2, "Pipeline",
+                 "- High branch divergence detected. Consider reorganizing "
+                 "conditional logic");
+      log_printf(2, "Pipeline",
+                 "- Evaluate potential for predication instead of branching");
     }
     if (shaderMetrics.registerPressure > 0.7) {
-      NSLog(@"- High register pressure. Consider splitting kernel or "
-            @"reducing local variables");
+      log_printf(2, "Pipeline",
+                 "- High register pressure. Consider splitting kernel or "
+                 "reducing local variables");
     }
     if (simdUtilization < 0.7) {
-      NSLog(@"- Low SIMD utilization. Review work distribution and "
-            @"thread block size");
+      log_printf(2, "Pipeline",
+                 "- Low SIMD utilization. Review work distribution and "
+                 "thread block size");
     }
 
     if (stats.gpuTime > 0.001) { // More than 1ms
-      NSLog(@"\nPerformance Analysis:");
-      NSLog(@"- Long GPU execution time detected (%.3f ms)",
-            stats.gpuTime * 1000.0);
-      NSLog(@"- Consider reviewing shader complexity and memory access "
-            @"patterns");
+      log_printf(2, "Pipeline", "\nPerformance Analysis:");
+      log_printf(2, "Pipeline", "- Long GPU execution time detected (%.3f ms)",
+                 stats.gpuTime * 1000.0);
+      log_printf(2, "Pipeline",
+                 "- Consider reviewing shader complexity and memory access "
+                 "patterns");
       if (stats.kernelOccupancy < 0.7) {
-        NSLog(@"- Low kernel occupancy (%.2f%%). Consider adjusting "
-              @"thread block size",
-              stats.kernelOccupancy * 100.0);
+        log_printf(2, "Pipeline",
+                   "- Low kernel occupancy (%.2f%%). Consider adjusting "
+                   "thread block size",
+                   stats.kernelOccupancy * 100.0);
       }
       if (stats.currentFPS < systemMaxFPS) {
-        NSLog(@"- Low frame rate (%.2f FPS). Consider optimization "
-              @"strategies",
-              stats.currentFPS);
+        log_printf(2, "Pipeline",
+                   "- Low frame rate (%.2f FPS). Consider optimization "
+                   "strategies",
+                   stats.currentFPS);
       }
     }
 
-    NSLog(@"\nStack Trace:");
-    NSLog(@"%@", stackTrace);
+    log_printf(2, "Pipeline", "\nStack Trace:");
+    log_printf(2, "Pipeline", "%s", [stackTrace UTF8String]);
   }];
 
   return stats;

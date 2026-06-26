@@ -1,238 +1,35 @@
+#include "expose_from_debug.h"
 #include "expose_to_debug.h"
+#include <pthread.h>
+#include <stdarg.h>
+
+static FILE *log_file_ptr = NULL;
+static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int log_enabled = 0;
+static int log_level_threshold = 1;
+static int log_timestamps_enabled = 1;
 
 void profile_command_buffer(id<MTLCommandBuffer> commandBuffer,
                             const char *name) {
-  // Start profiling
   NSDate *startTime = [NSDate date];
-
   [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
     NSDate *endTime = [NSDate date];
     NSTimeInterval elapsed = [endTime timeIntervalSinceDate:startTime];
-
     if (buffer.error) {
-      NSLog(@"Error in command buffer '%s': %@", name, buffer.error);
+      log_printf(2, "Profile", "Error in command buffer '%s': %s", name,
+                 [[buffer.error description] UTF8String]);
       return;
     }
-
-    NSLog(@"Command Buffer '%s' execution time: %.6f seconds", name, elapsed);
+    log_printf(2, "Profile", "Command Buffer '%s' execution time: %.6f seconds",
+               name, elapsed);
   }];
-
   [commandBuffer commit];
 }
-
-typedef struct {
-  const char *name;
-  size_t size;
-  const char *type;
-  NSArray *contents;
-} BufferConfig;
-
-typedef struct {
-  const char *condition;   // Expression or condition to evaluate
-  const char *description; // Description of the breakpoint
-} Breakpoint;
-
-// Error severity levels
-typedef enum {
-  ERROR_SEVERITY_INFO = 0,
-  ERROR_SEVERITY_WARNING = 1,
-  ERROR_SEVERITY_ERROR = 2,
-  ERROR_SEVERITY_FATAL = 3
-} ErrorSeverity;
-
-// Error categories
-typedef enum {
-  ERROR_CATEGORY_MEMORY = 0,
-  ERROR_CATEGORY_SHADER = 1,
-  ERROR_CATEGORY_PIPELINE = 2,
-  ERROR_CATEGORY_BUFFER = 3,
-  ERROR_CATEGORY_RUNTIME = 4,
-  ERROR_CATEGORY_VALIDATION = 5,
-  ERROR_CATEGORY_LIBRARY = 6,
-  ERROR_CATEGORY_COMMAND_QUEUE = 7,
-  ERROR_CATEGORY_COMMAND_BUFFER = 8,
-  ERROR_CATEGORY_COMMAND_ENCODER = 9
-} ErrorCategory;
-
-// Error structure
-typedef struct {
-  ErrorSeverity severity;
-  ErrorCategory category;
-  const char *message;
-  const char *location;
-  uint64_t timestamp;
-} ErrorRecord;
-
-// Error handling configuration
-typedef struct {
-  bool catch_warnings;          // Whether to catch and log warnings
-  bool catch_memory_errors;     // Track memory-related issues
-  bool catch_shader_errors;     // Track shader compilation/execution issues
-  bool catch_validation_errors; // Track data validation issues
-  bool break_on_error;          // Whether to pause execution on errors
-  int max_error_count;          // Maximum number of errors to store
-  ErrorSeverity min_severity;   // Minimum severity level to track
-} ErrorHandlingConfig;
-
-// Error collector
-typedef struct {
-  ErrorRecord *errors;
-  size_t error_count;
-  size_t capacity;
-} ErrorCollector;
-
-typedef struct {
-  char *event_name;
-  char *event_type;
-  char *details;
-  uint64_t timestamp;
-  size_t depth; // For tracking nested events
-} TimelineEvent;
-
-// Timeline configuration
-typedef struct {
-  bool enabled;
-  char *output_file;
-  bool track_buffers;
-  bool track_shaders;
-  bool track_performance;
-  size_t max_events;
-} TimelineConfig;
-
-typedef struct {
-  bool enabled;
-
-  // Compute Simulation
-  struct {
-    float processing_units_availability; // 0.0 - 1.0 (% of compute units
-                                         // available)
-    float clock_speed_reduction;         // 0.0 - 1.0 (reduction in clock speed)
-    int compute_unit_failures; // Number of simulated compute unit failures
-  } compute;
-
-  // Memory Simulation
-  struct {
-    float bandwidth_reduction; // 0.0 - 1.0 (% of bandwidth reduction)
-    float latency_multiplier;  // 1.0+ (increased latency)
-    size_t available_memory;   // Simulated available memory in bytes
-    float memory_error_rate;   // 0.0 - 1.0 (probability of memory transfer
-                               // errors)
-  } memory;
-
-  // Thermal and Power Simulation
-  struct {
-    bool enable_thermal_simulation;
-  } thermal;
-
-  // Performance Logging
-  struct {
-    bool detailed_logging;
-    char *log_file_path;
-  } logging;
-
-} LowEndGpuSimulation;
-
-typedef struct {
-  void *source_buffer;
-  void *destination_buffer;
-  size_t transfer_size;
-  bool transfer_completed;
-  float transfer_quality; // 0.0 - 1.0 representing transfer integrity
-} MemoryTransfer;
-
-typedef struct {
-  bool enable_async_tracking;
-  bool log_command_status;
-  bool detect_long_running_commands;
-  double long_command_threshold; // in seconds
-  bool generate_async_timeline;
-} AsyncCommandDebugConfig;
-
-typedef struct {
-  id<MTLCommandBuffer> command_buffer;
-  NSDate *submission_time;
-  NSDate *completion_time;
-  const char *name;
-  bool is_completed;
-  bool has_errors;
-  double execution_time;
-} AsyncCommandTracker;
-
-// Maximum number of async commands to track
-#define MAX_ASYNC_COMMANDS 100
-
-typedef struct {
-  AsyncCommandDebugConfig config;
-  AsyncCommandTracker commands[MAX_ASYNC_COMMANDS];
-  size_t command_count;
-} AsyncCommandDebugExtension;
-
-typedef enum {
-  THREAD_DISPATCH_DEFAULT = 0, // Default Metal thread dispatch
-  THREAD_DISPATCH_LINEAR,      // Execute threads in linear order
-  THREAD_DISPATCH_REVERSE,     // Execute threads in reverse order
-  THREAD_DISPATCH_RANDOM,      // Execute threads in random order
-  THREAD_DISPATCH_ALTERNATING, // Execute threads in alternating pattern
-  THREAD_DISPATCH_CUSTOM       // Custom execution pattern
-} ThreadDispatchMode;
-
-typedef struct {
-  ThreadDispatchMode dispatch_mode; // How to dispatch threads
-  bool enable_thread_debugging;     // Enable detailed thread debugging
-  bool log_thread_execution;        // Log thread execution order
-  bool validate_thread_access;      // Validate thread memory access
-  bool simulate_thread_failures;    // Simulate random thread failures
-  float thread_failure_rate;        // Probability of thread failure (0.0-1.0)
-  int custom_thread_group_size[3];  // Custom threadgroup size
-                                    // [width,height,depth]
-  int custom_grid_size[3];          // Custom grid size [width,height,depth]
-  const char *thread_order_file;    // File specifying custom thread order
-} ThreadControlConfig;
-
-typedef struct {
-  bool enabled;
-  bool print_variables;
-  bool step_by_step;
-  bool break_before_dispatch;
-  int verbosity_level;
-  size_t breakpoint_count;
-  Breakpoint *breakpoints;
-  ErrorHandlingConfig error_config;
-  ErrorCollector error_collector;
-  TimelineConfig timeline;
-  TimelineEvent *events;
-  size_t event_count;
-  LowEndGpuSimulation low_end_gpu;
-  AsyncCommandDebugExtension async_debug;
-  ThreadControlConfig thread_control;
-} DebugConfig;
 
 void debug_pause(const char *message) {
   printf("\n[DEBUG PAUSE] %s\nPress Enter to continue...", message);
   getchar();
 }
-
-typedef struct {
-  const char *metallib_path;
-  const char *function_name;
-  NSMutableArray *buffers;
-  NSMutableArray *image_buffers;
-  DebugConfig debug;
-  struct {
-    bool enabled;
-    const char *log_file_path;
-    int log_level; // 0=errors only, 1=warnings, 2=info, 3=debug
-    bool log_timestamps;
-  } logging;
-} ProfilerConfig;
-
-typedef struct {
-  const char *name;
-  const char *image_path;
-  size_t width;     // Can be 0 for auto-detection
-  size_t height;    // Can be 0 for auto-detection
-  const char *type; // Type of buffer (e.g., "float")
-} ImageBufferConfig;
 
 void print_buffer_state(id<MTLBuffer> buffer, const char *name, size_t size) {
   float *data = (float *)[buffer contents];
@@ -253,7 +50,8 @@ void check_breakpoints(DebugConfig *debug, const char *stage) {
   for (size_t i = 0; i < debug->breakpoint_count; i++) {
     Breakpoint *bp = &debug->breakpoints[i];
     if (strcmp(bp->condition, stage) == 0) {
-      NSLog(@"[BREAKPOINT] Hit breakpoint: %s", bp->description);
+      log_printf(2, "Breakpoint", "[BREAKPOINT] Hit breakpoint: %s",
+                 bp->description);
       debug_pause("Paused at breakpoint");
     }
   }
@@ -281,7 +79,8 @@ void record_error(DebugConfig *debug, ErrorSeverity severity,
     ErrorRecord *new_errors =
         realloc(collector->errors, sizeof(ErrorRecord) * new_capacity);
     if (!new_errors) {
-      NSLog(@"Failed to expand error collector capacity");
+      log_printf(0, "ErrorCollector",
+                 "Failed to expand error collector capacity");
       return;
     }
     collector->errors = new_errors;
@@ -298,9 +97,9 @@ void record_error(DebugConfig *debug, ErrorSeverity severity,
 
   // Log error based on verbosity
   if (debug->verbosity_level > 0) {
-    NSLog(@"[%s] %s: %s",
-          severity == ERROR_SEVERITY_WARNING ? "WARNING" : "ERROR", location,
-          message);
+    log_printf(0, "ErrorCollector", "[%s] %s: %s",
+               severity == ERROR_SEVERITY_WARNING ? "WARNING" : "ERROR",
+               location, message);
   }
 
   // Break if configured
@@ -358,8 +157,8 @@ void print_error_summary(DebugConfig *debug) {
 
   ErrorCollector *collector = &debug->error_collector;
 
-  NSLog(@"\n=== Error Summary ===");
-  NSLog(@"Total Errors: %zu", collector->error_count);
+  log_printf(2, "ErrorSummary", "\n=== Error Summary ===");
+  log_printf(2, "ErrorSummary", "Total Errors: %zu", collector->error_count);
 
   int warnings = 0, errors = 0, fatal = 0;
   for (size_t i = 0; i < collector->error_count; i++) {
@@ -378,9 +177,9 @@ void print_error_summary(DebugConfig *debug) {
     }
   }
 
-  NSLog(@"Warnings: %d", warnings);
-  NSLog(@"Errors: %d", errors);
-  NSLog(@"Fatal Errors: %d", fatal);
+  log_printf(2, "ErrorSummary", "Warnings: %d", warnings);
+  log_printf(2, "ErrorSummary", "Errors: %d", errors);
+  log_printf(2, "ErrorSummary", "Fatal Errors: %d", fatal);
 }
 
 void inject_memory_transfer_errors(MemoryTransfer *transfer,
@@ -404,9 +203,10 @@ void inject_memory_transfer_errors(MemoryTransfer *transfer,
 
     transfer->transfer_quality *= (1.0 - sim->memory.memory_error_rate);
 
-    NSLog(@"[LOW-END GPU SIM] Memory Transfer Error Injected: %zu bytes "
-          @"corrupted",
-          corruption_length);
+    log_printf(1, "Simulation",
+               "[LOW-END GPU SIM] Memory Transfer Error Injected: %zu bytes "
+               "corrupted",
+               corruption_length);
   }
 }
 
@@ -440,9 +240,10 @@ size_t simulate_bandwidth_limited_transfer(void *source, void *destination,
   // Potentially inject transfer errors
   inject_memory_transfer_errors(&transfer, sim);
 
-  NSLog(@"[LOW-END GPU SIM] Bandwidth Limited Transfer: %zu of %zu bytes "
-        @"(Quality: %.2f)",
-        max_transfer_size, total_size, transfer.transfer_quality);
+  log_printf(2, "Simulation",
+             "[LOW-END GPU SIM] Bandwidth Limited Transfer: %zu of %zu bytes "
+             "(Quality: %.2f)",
+             max_transfer_size, total_size, transfer.transfer_quality);
 
   return max_transfer_size;
 }
@@ -483,7 +284,7 @@ void simulate_low_end_gpu(LowEndGpuSimulation *sim,
   if (!sim->enabled)
     return;
 
-  NSLog(@"\n=== Low-End GPU Simulation ===");
+  log_printf(2, "Simulation", "\n=== Low-End GPU Simulation ===");
 
   MTLSize originalGridSize = *gridSize;
   MTLSize simulatedThreadGroupSize = *threadGroupSize;
@@ -512,25 +313,27 @@ void simulate_low_end_gpu(LowEndGpuSimulation *sim,
 
   if (sim->compute.clock_speed_reduction > 0) {
     execution_delay_factor *= (1.0 + sim->compute.clock_speed_reduction);
-    NSLog(@"Clock Speed Reduced: %.2f%% (Delay Factor: %.2fx)",
-          sim->compute.clock_speed_reduction * 100, execution_delay_factor);
+    log_printf(
+        2, "Simulation", "Clock Speed Reduced: %.2f%% (Delay Factor: %.2fx)",
+        sim->compute.clock_speed_reduction * 100, execution_delay_factor);
   }
 
   if (sim->memory.bandwidth_reduction > 0) {
     execution_delay_factor *=
         (1.0 + sim->memory.bandwidth_reduction *
                    1.5); // 1.5x multiplier for compounding effects
-    NSLog(@"Memory Bandwidth Reduced: %.2f%%",
-          sim->memory.bandwidth_reduction * 100);
+    log_printf(2, "Simulation", "Memory Bandwidth Reduced: %.2f%%",
+               sim->memory.bandwidth_reduction * 100);
   }
 
   if (sim->thermal.enable_thermal_simulation) {
     float throttle_factor = get_thermal_throttle_factor();
     if (throttle_factor > 1.0f) {
       execution_delay_factor *= throttle_factor;
-      NSLog(@"Thermal Throttling Active "
-            @"(system state factor: %.2fx)",
-            throttle_factor);
+      log_printf(2, "Simulation",
+                 "Thermal Throttling Active "
+                 "(system state factor: %.2fx)",
+                 throttle_factor);
     }
   }
 
@@ -550,6 +353,7 @@ void simulate_low_end_gpu(LowEndGpuSimulation *sim,
               (unsigned long)total_passes);
       fprintf(log_file, "Execution Delay Factor: %.2fx\n",
               execution_delay_factor);
+      fflush(log_file);
       fclose(log_file);
     }
   }
@@ -566,8 +370,9 @@ void simulate_low_end_gpu(LowEndGpuSimulation *sim,
         threadsPerThreadgroup:simulatedThreadGroupSize];
   }
 
-  NSLog(@"Simulation Complete - Total Impact Factor: %.2fx slower",
-        execution_delay_factor * total_passes);
+  log_printf(2, "Simulation",
+             "Simulation Complete - Total Impact Factor: %.2fx slower",
+             execution_delay_factor * total_passes);
 }
 
 void init_low_end_gpu_log_file(LowEndGpuSimulation *gpu) {
@@ -611,6 +416,7 @@ void init_low_end_gpu_log_file(LowEndGpuSimulation *gpu) {
   fprintf(f, "  Thermal Simulation Enabled:    %s\n",
           gpu->thermal.enable_thermal_simulation ? "Yes" : "No");
   fprintf(f, "\n");
+  fflush(f);
   fclose(f);
 }
 
@@ -638,16 +444,22 @@ void track_async_command(AsyncCommandDebugExtension *ext,
     // Log long-running commands
     if (ext->config.detect_long_running_commands &&
         tracker->execution_time > ext->config.long_command_threshold) {
-      NSLog(@"[ASYNC DEBUG] Long-running command detected: %s", tracker->name);
-      NSLog(@"Execution Time: %.4f seconds", tracker->execution_time);
+      log_printf(2, "Async", "[ASYNC DEBUG] Long-running command detected: %s",
+                 tracker->name);
+      log_printf(2, "Async", "Execution Time: %.4f seconds",
+                 tracker->execution_time);
     }
 
     // Log command status if enabled
     if (ext->config.log_command_status) {
-      NSLog(@"[ASYNC DEBUG] Command '%s' status:", tracker->name);
-      NSLog(@"  Completed: %@", tracker->is_completed ? @"Yes" : @"No");
-      NSLog(@"  Errors: %@", tracker->has_errors ? @"Yes" : @"No");
-      NSLog(@"  Execution Time: %.4f seconds", tracker->execution_time);
+      log_printf(2, "Async",
+                 "[ASYNC DEBUG] Command '%s' status:", tracker->name);
+      log_printf(2, "Async", "  Completed: %s",
+                 tracker->is_completed ? "Yes" : "No");
+      log_printf(2, "Async", "  Errors: %s",
+                 tracker->has_errors ? "Yes" : "No");
+      log_printf(2, "Async", "  Execution Time: %.4f seconds",
+                 tracker->execution_time);
     }
   }];
 }
@@ -658,7 +470,7 @@ void generate_async_command_timeline(AsyncCommandDebugExtension *ext) {
 
   FILE *timeline_file = fopen("async_command_timeline.json", "w");
   if (!timeline_file) {
-    NSLog(@"Failed to create async command timeline file");
+    log_printf(2, "Async", "Failed to create async command timeline file");
     return;
   }
 
@@ -676,6 +488,7 @@ void generate_async_command_timeline(AsyncCommandDebugExtension *ext) {
             (i < ext->command_count - 1) ? "," : "");
   }
   fprintf(timeline_file, "]\n");
+  fflush(timeline_file);
   fclose(timeline_file);
 }
 
@@ -707,12 +520,14 @@ void configure_thread_execution(id<MTLComputeCommandEncoder> encoder,
 
   // Log configuration if enabled
   if (debug->thread_control.log_thread_execution) {
-    NSLog(@"Thread Control Configuration:");
-    NSLog(@"  Dispatch Mode: %d", debug->thread_control.dispatch_mode);
-    NSLog(@"  Grid Size: %lux%lux%lu", gridSize.width, gridSize.height,
-          gridSize.depth);
-    NSLog(@"  ThreadGroup Size: %lux%lux%lu", threadGroupSize.width,
-          threadGroupSize.height, threadGroupSize.depth);
+    log_printf(2, "ThreadControl", "Thread Control Configuration:");
+    log_printf(2, "ThreadControl", "  Dispatch Mode: %d",
+               debug->thread_control.dispatch_mode);
+    log_printf(2, "ThreadControl", "  Grid Size: %lux%lux%lu", gridSize.width,
+               gridSize.height, gridSize.depth);
+    log_printf(2, "ThreadControl", "  ThreadGroup Size: %lux%lux%lu",
+               threadGroupSize.width, threadGroupSize.height,
+               threadGroupSize.depth);
   }
 
   // Dispatch based on selected mode
@@ -736,7 +551,8 @@ void configure_thread_execution(id<MTLComputeCommandEncoder> encoder,
           threadsPerThreadgroup:threadGroupSize];
 
       if (debug->thread_control.log_thread_execution) {
-        NSLog(@"Dispatched linear group %lu-%lu", i, i + thisDispatch - 1);
+        log_printf(2, "ThreadControl", "Dispatched linear group %lu-%lu", i,
+                   i + thisDispatch - 1);
       }
     }
     break;
@@ -757,7 +573,8 @@ void configure_thread_execution(id<MTLComputeCommandEncoder> encoder,
           threadsPerThreadgroup:threadGroupSize];
 
       if (debug->thread_control.log_thread_execution) {
-        NSLog(@"Dispatched reverse group %lu-%lu", start, start + count - 1);
+        log_printf(2, "ThreadControl", "Dispatched reverse group %lu-%lu",
+                   start, start + count - 1);
       }
     }
     break;
@@ -807,8 +624,9 @@ void configure_thread_execution(id<MTLComputeCommandEncoder> encoder,
               threadsPerThreadgroup:groupSize];
 
       if (debug->thread_control.log_thread_execution) {
-        NSLog(@"Dispatched random group %lu at (%lu,%lu,%lu)", groupIdx, x, y,
-              z);
+        log_printf(2, "ThreadControl",
+                   "Dispatched random group %lu at (%lu,%lu,%lu)", groupIdx, x,
+                   y, z);
       }
     }
 
@@ -831,7 +649,8 @@ void configure_thread_execution(id<MTLComputeCommandEncoder> encoder,
       [encoder dispatchThreads:evenGrid threadsPerThreadgroup:threadGroupSize];
 
       if (debug->thread_control.log_thread_execution) {
-        NSLog(@"Dispatched even group %lu-%lu", i, i + thisDispatch - 1);
+        log_printf(2, "ThreadControl", "Dispatched even group %lu-%lu", i,
+                   i + thisDispatch - 1);
       }
     }
 
@@ -845,7 +664,8 @@ void configure_thread_execution(id<MTLComputeCommandEncoder> encoder,
       [encoder dispatchThreads:oddGrid threadsPerThreadgroup:threadGroupSize];
 
       if (debug->thread_control.log_thread_execution) {
-        NSLog(@"Dispatched odd group %lu-%lu", i, i + thisDispatch - 1);
+        log_printf(2, "ThreadControl", "Dispatched odd group %lu-%lu", i,
+                   i + thisDispatch - 1);
       }
     }
     break;
@@ -890,8 +710,10 @@ void configure_thread_execution(id<MTLComputeCommandEncoder> encoder,
             // Validate coordinates
             if (di.x >= gridSize.width || di.y >= gridSize.height ||
                 di.z >= gridSize.depth) {
-              NSLog(@"Warning: Line %d coordinates (%u,%u,%u) exceed grid size",
-                    lineNum, di.x, di.y, di.z);
+              log_printf(
+                  2, "ThreadControl",
+                  "Warning: Line %d coordinates (%u,%u,%u) exceed grid size",
+                  lineNum, di.x, di.y, di.z);
               continue;
             }
 
@@ -899,14 +721,16 @@ void configure_thread_execution(id<MTLComputeCommandEncoder> encoder,
             if (di.count == 0 || di.count > threadGroupSize.width *
                                                 threadGroupSize.height *
                                                 threadGroupSize.depth) {
-              NSLog(@"Warning: Line %d count %u exceeds threadgroup size",
-                    lineNum, di.count);
+              log_printf(2, "ThreadControl",
+                         "Warning: Line %d count %u exceeds threadgroup size",
+                         lineNum, di.count);
               di.count = threadGroupSize.width; // Default to threadgroup width
             }
 
             dispatches[dispatchIndex++] = di;
           } else {
-            NSLog(@"Error parsing line %d: %s", lineNum, line);
+            log_printf(2, "ThreadControl", "Error parsing line %d: %s", lineNum,
+                       line);
           }
         }
         fclose(file);
@@ -935,15 +759,16 @@ void configure_thread_execution(id<MTLComputeCommandEncoder> encoder,
               threadsPerThreadgroup:customGroup];
 
           if (debug->thread_control.log_thread_execution) {
-            NSLog(@"Dispatched custom group %d: (%u,%u,%u) count %u", i, di.x,
-                  di.y, di.z, actualCount);
+            log_printf(2, "ThreadControl",
+                       "Dispatched custom group %d: (%u,%u,%u) count %u", i,
+                       di.x, di.y, di.z, actualCount);
           }
         }
 
         free(dispatches);
       } else {
-        NSLog(@"Failed to open thread order file: %s",
-              debug->thread_control.thread_order_file);
+        log_printf(2, "ThreadControl", "Failed to open thread order file: %s",
+                   debug->thread_control.thread_order_file);
         [encoder dispatchThreads:gridSize
             threadsPerThreadgroup:threadGroupSize];
       }
@@ -1008,20 +833,18 @@ void load_thread_control_config(DebugConfig *debug, NSDictionary *debugConfig) {
 
 void log_message(ProfilerConfig *config, int level, const char *category,
                  const char *format, ...) {
-  if (!config->logging.enabled || level > config->logging.log_level) {
+  if (!log_enabled || level > log_level_threshold) {
     return;
   }
 
-  FILE *log_file = fopen(config->logging.log_file_path, "a");
-  if (!log_file) {
-    // If we can't open the log file, fall back to console
-    fprintf(stderr, "Warning: Could not open log file %s\n",
-            config->logging.log_file_path);
-    log_file = stderr;
+  pthread_mutex_lock(&log_mutex);
+  if (!log_file_ptr) {
+    pthread_mutex_unlock(&log_mutex);
+    return;
   }
 
   char timestamp[64] = "";
-  if (config->logging.log_timestamps) {
+  if (log_timestamps_enabled) {
     time_t now = time(NULL);
     struct tm *timeinfo = localtime(&now);
     strftime(timestamp, sizeof(timestamp), "[%Y-%m-%d %H:%M:%S] ", timeinfo);
@@ -1051,18 +874,72 @@ void log_message(ProfilerConfig *config, int level, const char *category,
     snprintf(category_str, sizeof(category_str), "[%s] ", category);
   }
 
-  fprintf(log_file, "%s%s%s", timestamp, level_str, category_str);
+  fprintf(log_file_ptr, "%s%s%s", timestamp, level_str, category_str);
 
   va_list args;
   va_start(args, format);
-  vfprintf(log_file, format, args);
+  vfprintf(log_file_ptr, format, args);
   va_end(args);
 
-  fprintf(log_file, "\n");
+  fprintf(log_file_ptr, "\n");
+  fflush(log_file_ptr);
 
-  if (log_file != stderr) {
-    fclose(log_file);
+  pthread_mutex_unlock(&log_mutex);
+}
+
+void log_printf(int level, const char *category, const char *format, ...) {
+  if (!log_enabled || level > log_level_threshold) {
+    return;
   }
+
+  pthread_mutex_lock(&log_mutex);
+  if (!log_file_ptr) {
+    pthread_mutex_unlock(&log_mutex);
+    return;
+  }
+
+  char timestamp[64] = "";
+  if (log_timestamps_enabled) {
+    time_t now = time(NULL);
+    struct tm *timeinfo = localtime(&now);
+    strftime(timestamp, sizeof(timestamp), "[%Y-%m-%d %H:%M:%S] ", timeinfo);
+  }
+
+  char level_str[10] = "";
+  switch (level) {
+  case 0:
+    strcpy(level_str, "[ERROR] ");
+    break;
+  case 1:
+    strcpy(level_str, "[WARN]  ");
+    break;
+  case 2:
+    strcpy(level_str, "[INFO]  ");
+    break;
+  case 3:
+    strcpy(level_str, "[DEBUG] ");
+    break;
+  default:
+    strcpy(level_str, "[LOG]   ");
+    break;
+  }
+
+  char category_str[64] = "";
+  if (category) {
+    snprintf(category_str, sizeof(category_str), "[%s] ", category);
+  }
+
+  fprintf(log_file_ptr, "%s%s%s", timestamp, level_str, category_str);
+
+  va_list args;
+  va_start(args, format);
+  vfprintf(log_file_ptr, format, args);
+  va_end(args);
+
+  fprintf(log_file_ptr, "\n");
+  fflush(log_file_ptr);
+
+  pthread_mutex_unlock(&log_mutex);
 }
 
 void init_log_file(ProfilerConfig *config) {
@@ -1070,24 +947,362 @@ void init_log_file(ProfilerConfig *config) {
     return;
   }
 
+  pthread_mutex_lock(&log_mutex);
+
+  // Close previous file if still open
+  if (log_file_ptr) {
+    fclose(log_file_ptr);
+  }
+
   // Create/truncate the log file
-  FILE *log_file = fopen(config->logging.log_file_path, "w");
-  if (!log_file) {
+  log_file_ptr = fopen(config->logging.log_file_path, "w");
+  if (!log_file_ptr) {
     fprintf(stderr, "Warning: Could not initialize log file %s\n",
             config->logging.log_file_path);
+    pthread_mutex_unlock(&log_mutex);
     return;
   }
+
+  setvbuf(log_file_ptr, NULL, _IOLBF, 0);
+
+  // Set global state from config
+  log_enabled = config->logging.enabled ? 1 : 0;
+  log_level_threshold = config->logging.log_level;
+  log_timestamps_enabled = config->logging.log_timestamps ? 1 : 0;
 
   time_t now = time(NULL);
   struct tm *timeinfo = localtime(&now);
   char date_str[64];
   strftime(date_str, sizeof(date_str), "%Y-%m-%d %H:%M:%S", timeinfo);
 
-  fprintf(log_file, "=== gpumkat Profiler Log Started at %s ===\n\n", date_str);
-  fclose(log_file);
+  fprintf(log_file_ptr, "=== gpumkat Profiler Log Started at %s ===\n\n",
+          date_str);
+  fflush(log_file_ptr);
+
+  pthread_mutex_unlock(&log_mutex);
 
   log_message(config, 2, "Logging", "Logging initialized to file: %s",
               config->logging.log_file_path);
+}
+
+// String->enum helpers
+
+MTLPixelFormat pixel_format_from_string(const char *str) {
+  if (!str)
+    return MTLPixelFormatRGBA8Unorm;
+  if (strcmp(str, "RGBA8Unorm") == 0)
+    return MTLPixelFormatRGBA8Unorm;
+  if (strcmp(str, "RGBA8Uint") == 0)
+    return MTLPixelFormatRGBA8Uint;
+  if (strcmp(str, "RGBA8Sint") == 0)
+    return MTLPixelFormatRGBA8Sint;
+  if (strcmp(str, "BGRA8Unorm") == 0)
+    return MTLPixelFormatBGRA8Unorm;
+  if (strcmp(str, "RGBA16Float") == 0)
+    return MTLPixelFormatRGBA16Float;
+  if (strcmp(str, "R32Float") == 0)
+    return MTLPixelFormatR32Float;
+  if (strcmp(str, "RGBA32Float") == 0)
+    return MTLPixelFormatRGBA32Float;
+  if (strcmp(str, "R16Float") == 0)
+    return MTLPixelFormatR16Float;
+  if (strcmp(str, "R8Unorm") == 0)
+    return MTLPixelFormatR8Unorm;
+  NSLog(@"Warning: Unknown pixel format '%s', defaulting to RGBA8Unorm", str);
+  return MTLPixelFormatRGBA8Unorm;
+}
+
+MTLTextureUsage texture_usage_from_string_array(NSArray *array) {
+  MTLTextureUsage usage = MTLTextureUsageUnknown;
+  for (NSString *s in array) {
+    if ([s isEqualToString:@"shader_read"])
+      usage |= MTLTextureUsageShaderRead;
+    else if ([s isEqualToString:@"shader_write"])
+      usage |= MTLTextureUsageShaderWrite;
+    else if ([s isEqualToString:@"render_target"])
+      usage |= MTLTextureUsageRenderTarget;
+    else if ([s isEqualToString:@"pixel_format_view"])
+      usage |= MTLTextureUsagePixelFormatView;
+  }
+  if (usage == MTLTextureUsageUnknown)
+    usage = MTLTextureUsageShaderRead;
+  return usage;
+}
+
+// Shared image decoding
+
+uint8_t *decode_image_to_rgba8(const char *image_path, size_t *out_width,
+                               size_t *out_height,
+                               ProfilerConfig *profilerConfig) {
+  if (!image_path)
+    return NULL;
+  NSString *path = [NSString stringWithUTF8String:image_path];
+  NSURL *url = [NSURL fileURLWithPath:path];
+  CGImageSourceRef source =
+      CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
+  if (!source) {
+    if (profilerConfig)
+      record_error(&profilerConfig->debug, ERROR_SEVERITY_ERROR,
+                   ERROR_CATEGORY_BUFFER, "Cannot open image file", image_path);
+    return NULL;
+  }
+  CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
+  CFRelease(source);
+  if (!image) {
+    if (profilerConfig)
+      record_error(&profilerConfig->debug, ERROR_SEVERITY_ERROR,
+                   ERROR_CATEGORY_BUFFER, "Failed to decode image", image_path);
+    return NULL;
+  }
+  size_t w = CGImageGetWidth(image);
+  size_t h = CGImageGetHeight(image);
+  size_t bpr = w * 4;
+  uint8_t *tempData = (uint8_t *)malloc(bpr * h);
+  if (!tempData) {
+    CGImageRelease(image);
+    return NULL;
+  }
+  CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+  CGContextRef ctx = CGBitmapContextCreate(tempData, w, h, 8, bpr, cs,
+                                           kCGImageAlphaPremultipliedLast |
+                                               kCGBitmapByteOrder32Big);
+  CGColorSpaceRelease(cs);
+  if (!ctx) {
+    free(tempData);
+    CGImageRelease(image);
+    return NULL;
+  }
+  CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), image);
+  CGContextRelease(ctx);
+  CGImageRelease(image);
+  if (out_width)
+    *out_width = w;
+  if (out_height)
+    *out_height = h;
+  return tempData;
+}
+
+void print_texture_state(id<MTLTexture> texture, const char *name) {
+  if (!texture || !name)
+    return;
+  printf("\nTexture State - %s:\n", name);
+  printf("  Size: %lux%lu\n", (unsigned long)texture.width,
+         (unsigned long)texture.height);
+  printf("  Pixel Format: %lu\n", (unsigned long)texture.pixelFormat);
+  printf("  Mipmap Levels: %lu\n", (unsigned long)texture.mipmapLevelCount);
+  printf("  Array Layers: %lu\n", (unsigned long)texture.arrayLength);
+  printf("  Usage: %lu\n", (unsigned long)texture.usage);
+}
+
+void sample_texture_pixel(id<MTLTexture> texture, float x, float y,
+                          float *out_rgba) {
+  if (!texture || !out_rgba)
+    return;
+  if (texture.pixelFormat == MTLPixelFormatRGBA8Unorm) {
+    uint8_t pixel[4] = {0};
+    MTLRegion region = MTLRegionMake2D((NSUInteger)x, (NSUInteger)y, 1, 1);
+    [texture getBytes:pixel bytesPerRow:4 fromRegion:region mipmapLevel:0];
+    out_rgba[0] = pixel[0] / 255.0f;
+    out_rgba[1] = pixel[1] / 255.0f;
+    out_rgba[2] = pixel[2] / 255.0f;
+    out_rgba[3] = pixel[3] / 255.0f;
+  } else {
+    float pixel[4] = {0};
+    MTLRegion region = MTLRegionMake2D((NSUInteger)x, (NSUInteger)y, 1, 1);
+    [texture getBytes:pixel bytesPerRow:16 fromRegion:region mipmapLevel:0];
+    out_rgba[0] = pixel[0];
+    out_rgba[1] = pixel[1];
+    out_rgba[2] = pixel[2];
+    out_rgba[3] = pixel[3];
+  }
+}
+
+// Compute buffer from image (legacy path)
+
+id<MTLBuffer> create_compute_buffer_from_image(id<MTLDevice> device,
+                                               ImageBufferConfig *config,
+                                               ProfilerConfig *profilerConfig) {
+  if (!config || !config->image_path)
+    return nil;
+  size_t w = 0, h = 0;
+  uint8_t *rgba =
+      decode_image_to_rgba8(config->image_path, &w, &h, profilerConfig);
+  if (!rgba)
+    return nil;
+  size_t pixelCount = w * h;
+  size_t floatCount = pixelCount * 4;
+  size_t bufferSize = floatCount * sizeof(float);
+  id<MTLBuffer> buffer =
+      [device newBufferWithLength:bufferSize
+                          options:MTLResourceStorageModeShared];
+  if (!buffer) {
+    free(rgba);
+    if (profilerConfig)
+      record_error(&profilerConfig->debug, ERROR_SEVERITY_ERROR,
+                   ERROR_CATEGORY_BUFFER, "Failed to allocate buffer",
+                   config->name);
+    return nil;
+  }
+  float *floatData = (float *)buffer.contents;
+  for (size_t i = 0; i < pixelCount; i++) {
+    size_t b = i * 4;
+    floatData[i * 4 + 0] = (float)rgba[b + 0] / 255.0f;
+    floatData[i * 4 + 1] = (float)rgba[b + 1] / 255.0f;
+    floatData[i * 4 + 2] = (float)rgba[b + 2] / 255.0f;
+    floatData[i * 4 + 3] = (float)rgba[b + 3] / 255.0f;
+  }
+  free(rgba);
+  if (config->width == 0)
+    config->width = (uint32_t)w;
+  if (config->height == 0)
+    config->height = (uint32_t)h;
+  if (profilerConfig && profilerConfig->debug.enabled) {
+    log_message(profilerConfig, 2, "ImageBuffer",
+                "Loaded '%s' (%zux%zu) as %zu floats", config->name, w, h,
+                floatCount);
+  }
+  return buffer;
+}
+
+// float -> half helper
+static inline uint16_t float32_to_float16(float f) {
+  uint32_t i;
+  memcpy(&i, &f, sizeof(i));
+  uint32_t sign = (i >> 16) & 0x8000;
+  int32_t exp = ((i >> 23) & 0xff) - 127 + 15;
+  uint32_t mant = i & 0x7fffff;
+  if (exp <= 0) {
+    mant = (mant | 0x800000) >> (1 - exp);
+    exp = 0;
+  } else if (exp > 30) {
+    exp = 31;
+    mant = 0;
+  }
+  return (uint16_t)(sign | ((uint32_t)exp << 10) | (mant >> 13));
+}
+
+id<MTLTexture> create_texture_from_image(id<MTLDevice> device,
+                                         ImageBufferConfig *config,
+                                         ProfilerConfig *profilerConfig) {
+  if (!config)
+    return nil;
+
+  size_t w = config->width, h = config->height;
+  uint8_t *rgba = NULL;
+
+  // If image_path is provided, decode it; otherwise create empty texture
+  if (config->image_path && strlen(config->image_path) > 0) {
+    rgba = decode_image_to_rgba8(config->image_path, &w, &h, profilerConfig);
+    if (!rgba) {
+      if (profilerConfig)
+        record_error(&profilerConfig->debug, ERROR_SEVERITY_ERROR,
+                     ERROR_CATEGORY_BUFFER, "Failed to decode image",
+                     config->name);
+      return nil;
+    }
+  }
+
+  // Fall back to config dimensions if decoder didn't set them
+  if (w == 0)
+    w = 512;
+  if (h == 0)
+    h = 512;
+
+  MTLTextureDescriptor *desc = [[MTLTextureDescriptor alloc] init];
+  desc.textureType = MTLTextureType2D;
+  desc.pixelFormat = config->pixel_format;
+  desc.width = w;
+  desc.height = h;
+  desc.depth = 1;
+  desc.usage = config->texture_usage | MTLTextureUsageShaderRead;
+  desc.storageMode = MTLStorageModeShared;
+
+  if (config->mipmaps) {
+    NSUInteger maxLevels = 1 + (NSUInteger)floor(log2(MAX(w, h)));
+    desc.mipmapLevelCount = MIN(maxLevels, 15);
+  }
+
+  id<MTLTexture> texture = [device newTextureWithDescriptor:desc];
+  if (!texture) {
+    free(rgba);
+    if (profilerConfig)
+      record_error(&profilerConfig->debug, ERROR_SEVERITY_ERROR,
+                   ERROR_CATEGORY_BUFFER, "Failed to create texture",
+                   config->name);
+    return nil;
+  }
+
+  // Upload pixel data if we decoded an image
+  if (rgba) {
+    MTLRegion region = MTLRegionMake2D(0, 0, w, h);
+    if (config->pixel_format == MTLPixelFormatRGBA8Unorm) {
+      [texture replaceRegion:region
+                 mipmapLevel:0
+                   withBytes:rgba
+                 bytesPerRow:w * 4];
+    } else if (config->pixel_format == MTLPixelFormatRGBA16Float) {
+      size_t count = w * h;
+      uint16_t *fp16 = malloc(count * 8);
+      for (size_t i = 0; i < count; i++) {
+        float r = rgba[i * 4 + 0] / 255.0f, g = rgba[i * 4 + 1] / 255.0f;
+        float b = rgba[i * 4 + 2] / 255.0f, a = rgba[i * 4 + 3] / 255.0f;
+        fp16[i * 4 + 0] = float32_to_float16(r);
+        fp16[i * 4 + 1] = float32_to_float16(g);
+        fp16[i * 4 + 2] = float32_to_float16(b);
+        fp16[i * 4 + 3] = float32_to_float16(a);
+      }
+      [texture replaceRegion:region
+                 mipmapLevel:0
+                   withBytes:fp16
+                 bytesPerRow:w * 8];
+      free(fp16);
+    } else if (config->pixel_format == MTLPixelFormatR32Float) {
+      size_t count = w * h;
+      float *f32 = malloc(count * 4);
+      for (size_t i = 0; i < count; i++)
+        f32[i] = rgba[i * 4 + 0] / 255.0f;
+      [texture replaceRegion:region
+                 mipmapLevel:0
+                   withBytes:f32
+                 bytesPerRow:w * 4];
+      free(f32);
+    } else if (config->pixel_format == MTLPixelFormatRGBA8Uint ||
+               config->pixel_format == MTLPixelFormatRGBA8Sint) {
+      // Same 4-byte-per-pixel byte layout as RGBA8Unorm
+      [texture replaceRegion:region
+                 mipmapLevel:0
+                   withBytes:rgba
+                 bytesPerRow:w * 4];
+    } else {
+      [texture replaceRegion:region
+                 mipmapLevel:0
+                   withBytes:rgba
+                 bytesPerRow:w * 4];
+    }
+  }
+
+  // Generate mipmaps if requested
+  if (config->mipmaps && texture.mipmapLevelCount > 1) {
+    id<MTLCommandQueue> q = [device newCommandQueue];
+    id<MTLCommandBuffer> cb = [q commandBuffer];
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    [blit generateMipmapsForTexture:texture];
+    [blit endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+  }
+
+  free(rgba);
+
+  config->width = (uint32_t)w;
+  config->height = (uint32_t)h;
+
+  if (profilerConfig && profilerConfig->debug.enabled) {
+    log_message(profilerConfig, 2, "Texture",
+                "Created texture '%s' (%zux%zu) fmt=%lu", config->name, w, h,
+                (unsigned long)config->pixel_format);
+  }
+  return texture;
 }
 
 ProfilerConfig *load_config(const char *config_path) {
@@ -1112,6 +1327,7 @@ ProfilerConfig *load_config(const char *config_path) {
   config->function_name = strdup([json[@"function_name"] UTF8String]);
   config->image_buffers = [[NSMutableArray alloc] init];
   config->buffers = [[NSMutableArray alloc] init];
+  config->metal_textures = [[NSMutableDictionary alloc] init];
 
   NSDictionary *loggingConfig = json[@"logging"];
   if (loggingConfig) {
@@ -1199,13 +1415,48 @@ ProfilerConfig *load_config(const char *config_path) {
   if (imageBuffersConfig) {
     for (NSDictionary *imageBufferInfo in imageBuffersConfig) {
       ImageBufferConfig *imageBufferConfig = malloc(sizeof(ImageBufferConfig));
-      imageBufferConfig->name = strdup([imageBufferInfo[@"name"] UTF8String]);
+      memset(imageBufferConfig, 0, sizeof(ImageBufferConfig));
+      NSString *nameStr = imageBufferInfo[@"name"];
+      imageBufferConfig->name =
+          nameStr ? strdup([nameStr UTF8String]) : strdup("unnamed");
+      NSString *imgPathStr = imageBufferInfo[@"image_path"];
       imageBufferConfig->image_path =
-          strdup([imageBufferInfo[@"image_path"] UTF8String]);
+          imgPathStr ? strdup([imgPathStr UTF8String]) : NULL;
       imageBufferConfig->width = [imageBufferInfo[@"width"] unsignedLongValue];
       imageBufferConfig->height =
           [imageBufferInfo[@"height"] unsignedLongValue];
-      imageBufferConfig->type = strdup([imageBufferInfo[@"type"] UTF8String]);
+      imageBufferConfig->type =
+          strdup([imageBufferInfo[@"type"] UTF8String] ?: "float");
+
+      // Parse new texture fields
+      NSString *backendStr = imageBufferInfo[@"backend"];
+      NSString *pixelFormatStr = imageBufferInfo[@"pixel_format"];
+      NSArray *textureUsageArr = imageBufferInfo[@"texture_usage"];
+      NSDictionary *bindDict = imageBufferInfo[@"bind"];
+
+      imageBufferConfig->pixel_format =
+          pixelFormatStr ? pixel_format_from_string([pixelFormatStr UTF8String])
+                         : MTLPixelFormatRGBA8Unorm;
+      imageBufferConfig->mipmaps = [imageBufferInfo[@"mipmaps"] boolValue];
+      imageBufferConfig->texture_usage =
+          textureUsageArr ? texture_usage_from_string_array(textureUsageArr)
+                          : MTLTextureUsageShaderRead;
+
+      if (backendStr && [backendStr isEqualToString:@"buffer"]) {
+        imageBufferConfig->backend = 1; // IMAGE_BACKEND_BUFFER
+      } else {
+        imageBufferConfig->backend = 0; // IMAGE_BACKEND_TEXTURE (default)
+      }
+
+      imageBufferConfig->bind_as = 0; // BIND_AS_TEXTURE default
+      imageBufferConfig->bind_index = 0;
+      if (bindDict) {
+        NSString *bindAsStr = bindDict[@"as"];
+        if (bindAsStr && [bindAsStr isEqualToString:@"buffer"]) {
+          imageBufferConfig->bind_as = 1; // BIND_AS_BUFFER
+        }
+        imageBufferConfig->bind_index = [bindDict[@"index"] unsignedLongValue];
+      }
 
       [config->image_buffers
           addObject:[NSValue valueWithPointer:imageBufferConfig]];
@@ -1300,4 +1551,14 @@ ProfilerConfig *load_config(const char *config_path) {
   load_thread_control_config(&config->debug, debugConfig);
 
   return config;
+}
+
+void close_log_file(void) {
+  pthread_mutex_lock(&log_mutex);
+  if (log_file_ptr) {
+    fclose(log_file_ptr);
+    log_file_ptr = NULL;
+  }
+  log_enabled = 0;
+  pthread_mutex_unlock(&log_mutex);
 }

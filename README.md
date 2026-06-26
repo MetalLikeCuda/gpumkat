@@ -81,7 +81,7 @@ More examples can be seen in the examples folder
 ```json
 {
     "metallib_path": "default.metallib",
-    "function_name": "compute_shader",
+    "function_name": "texture_invert",
     "logging": {
         "enabled": true,
         "log_file_path": "gpumkat_profiler.log",
@@ -92,14 +92,9 @@ More examples can be seen in the examples folder
         "enabled": true,
         "print_variables": true,
         "step_by_step": true,
-        "break_before_dispatch": true,
+        "break_before_dispatch": false,
         "verbosity_level": 2,
-        "breakpoints": [
-            {
-                "condition": "BeforeDispatch",
-                "description": "After buffer initialization"
-            }
-        ],
+        "breakpoints": [],
         "error_handling": {
             "catch_warnings": true,
             "catch_memory_errors": true,
@@ -110,7 +105,7 @@ More examples can be seen in the examples folder
             "min_severity": 1
         },
         "timeline": {
-            "enabled": true,
+            "enabled": false,
             "output_file": "gpumkat_timeline2.json",
             "track_buffers": true,
             "track_shaders": true,
@@ -118,7 +113,7 @@ More examples can be seen in the examples folder
             "max_events": 1000
         },
         "low_end_gpu": {
-            "enabled": true,
+            "enabled": false,
             "compute": {
                 "processing_units_availability": 0.6,
                 "clock_speed_reduction": 0.4,
@@ -141,35 +136,35 @@ More examples can be seen in the examples folder
             }
         },
         "async_debug": {
-            "enable_async_tracking": true,
-            "log_command_status": true,
-            "detect_long_running_commands": true,
+            "enable_async_tracking": false,
+            "log_command_status": false,
+            "detect_long_running_commands": false,
             "long_command_threshold": 2.5,
-            "generate_async_timeline": true
+            "generate_async_timeline": false
         },
         "thread_control": {
-            "enable_thread_debugging": true,
-            "dispatch_mode": 3,
-            "log_thread_execution": true,
-            "validate_thread_access": true,
-            "simulate_thread_failures": true,
-            "thread_failure_rate": 0.05,
+            "enable_thread_debugging": false,
+            "dispatch_mode": 0,
+            "log_thread_execution": false,
+            "validate_thread_access": false,
+            "simulate_thread_failures": false,
+            "thread_failure_rate": 0.0,
             "custom_thread_group_size": [
-                32,
-                1,
+                16,
+                16,
                 1
             ],
             "custom_grid_size": [
-                1024,
-                1,
+                512,
+                512,
                 1
             ],
-            "thread_order_file": "custom_thread_order.txt"
+            "thread_order_file": ""
         }
     },
     "buffers": [
         {
-            "name": "inputBuffer",
+            "name": "input_a",
             "size": 1024,
             "type": "float",
             "contents": [
@@ -181,7 +176,19 @@ More examples can be seen in the examples folder
             ]
         },
         {
-            "name": "outputBuffer",
+            "name": "input_b",
+            "size": 1024,
+            "type": "float",
+            "contents": [
+                2.0,
+                3.0,
+                4.0,
+                5.0,
+                6.0
+            ]
+        },
+        {
+            "name": "output",
             "size": 1024,
             "type": "float",
             "contents": []
@@ -190,25 +197,36 @@ More examples can be seen in the examples folder
     "image_buffers": [
         {
             "name": "inputImage",
-            "image_path": "/path/to/image.png",
+            "image_path": "image.png",
             "width": 0,
             "height": 0,
-            "type": "float"
+            "pixel_format": "RGBA8Unorm",
+            "mipmaps": false,
+            "texture_usage": [
+                "shader_read"
+            ],
+            "backend": "texture",
+            "bind": {
+                "as": "texture",
+                "index": 0
+            }
+        },
+        {
+            "name": "outputImage",
+            "width": 512,
+            "height": 512,
+            "pixel_format": "RGBA8Unorm",
+            "mipmaps": false,
+            "texture_usage": [
+                "shader_write"
+            ],
+            "backend": "texture",
+            "bind": {
+                "as": "texture",
+                "index": 1
+            }
         }
     ]
-}
-```
-
-### Example kernel:
-
-```c
-#include <metal_stdlib>
-using namespace metal;
-
-kernel void compute_shader(const device float *input [[buffer(0)]],
-                           device float *output [[buffer(1)]],
-                           uint index [[thread_position_in_grid]]) {
-    output[index] = input[index] * 2.0;
 }
 ```
 
@@ -228,3 +246,4 @@ Other shaders you can use are located in the list of shaders: https://github.com
 
 Some things like temperature are approximated so it's better to just use instruments if you want very low level hardware specific data, though for normal debugging this should be better.
 
+You can still use the old image buffer logic using the old style config.
