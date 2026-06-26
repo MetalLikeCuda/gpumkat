@@ -1,7 +1,7 @@
-// metal_utils.h
+// gpumkat.h
 
-#ifndef METAL_UTILS_H
-#define METAL_UTILS_H
+#ifndef GPUMKAT_H
+#define GPUMKAT_H
 
 #include "modules/debug/expose_from_debug.h"
 #include "modules/lsp_server/lsp_integration.h"
@@ -21,7 +21,7 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 
-#define VERSION "v1.2"
+#define VERSION "v1.3"
 #define MAX_PATH_LEN 256
 
 // -------------------- Hot Reloading --------------------
@@ -64,5 +64,4 @@ id<MTLBuffer> create_buffer_with_error_checking(id<MTLDevice> device,
 // -------------------- Signal Handling --------------------
 void handle_sigint(int sig);
 
-#endif // METAL_UTILS_H
-
+#endif // GPUMKAT_H
